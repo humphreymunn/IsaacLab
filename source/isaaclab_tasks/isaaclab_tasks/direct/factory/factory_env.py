@@ -482,7 +482,7 @@ class FactoryEnv(DirectRLEnv):
             self.extras["success_times"] = success_times
 
         self.prev_actions = self.actions.clone()
-        return rew_buf
+        return rew_buf.unsqueeze(-1)
 
     def _update_rew_buf(self, curr_successes):
         """Compute reward at current timestep."""
@@ -690,9 +690,10 @@ class FactoryEnv(DirectRLEnv):
 
         # (1.e.) Noisy position observation.
         fixed_asset_pos_noise = torch.randn((len(env_ids), 3), dtype=torch.float32, device=self.device)
+        #print(self.cfg.obs_rand.fixed_asset_pos, env_ids)
         fixed_asset_pos_rand = torch.tensor(self.cfg.obs_rand.fixed_asset_pos, dtype=torch.float32, device=self.device)
         fixed_asset_pos_noise = fixed_asset_pos_noise @ torch.diag(fixed_asset_pos_rand)
-        self.init_fixed_pos_obs_noise[:] = fixed_asset_pos_noise
+        self.init_fixed_pos_obs_noise[env_ids] = fixed_asset_pos_noise
 
         self.step_sim_no_action()
 

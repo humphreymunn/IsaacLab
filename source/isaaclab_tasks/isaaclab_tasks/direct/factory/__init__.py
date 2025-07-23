@@ -13,6 +13,7 @@ from .factory_env_cfg import FactoryTaskGearMeshCfg, FactoryTaskNutThreadCfg, Fa
 # Register Gym environments.
 ##
 
+
 gym.register(
     id="Isaac-Factory-PegInsert-Direct-v0",
     entry_point="isaaclab_tasks.direct.factory:FactoryEnv",
@@ -20,6 +21,7 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": FactoryTaskPegInsertCfg,
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:FactoryPPORunnerCfg",
     },
 )
 
