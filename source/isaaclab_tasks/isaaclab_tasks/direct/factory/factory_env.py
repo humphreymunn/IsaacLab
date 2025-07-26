@@ -188,6 +188,9 @@ class FactoryEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
+        self.reward_components = 7
+        self.reward_component_names = ["kp_coarse", "kp_baseline", "kp_fine", "action_penalty", "action_grad_penalty", "curr_engaged", "curr_successes"]
+
     def _compute_intermediate_values(self, dt):
         """Get values computed from raw tensors. This includes adding noise."""
         # TODO: A lot of these can probably only be set once?
@@ -482,7 +485,7 @@ class FactoryEnv(DirectRLEnv):
             self.extras["success_times"] = success_times
 
         self.prev_actions = self.actions.clone()
-        return rew_buf.unsqueeze(-1)
+        return rew_buf.T
 
     def _update_rew_buf(self, curr_successes):
         """Compute reward at current timestep."""
@@ -502,22 +505,22 @@ class FactoryEnv(DirectRLEnv):
         rew_dict["kp_fine"] = squashing_fn(self.keypoint_dist, a2, b2)
 
         # Action penalties.
-        rew_dict["action_penalty"] = torch.norm(self.actions, p=2)
+        rew_dict["action_penalty"] = torch.norm(self.actions, p=2, dim=-1)
         rew_dict["action_grad_penalty"] = torch.norm(self.actions - self.prev_actions, p=2, dim=-1)
         rew_dict["curr_engaged"] = (
             self._get_curr_successes(success_threshold=self.cfg_task.engage_threshold, check_rot=False).clone().float()
         )
         rew_dict["curr_successes"] = curr_successes.clone().float()
-
-        rew_buf = (
+        
+        rew_buf = torch.stack([
             rew_dict["kp_coarse"]
-            + rew_dict["kp_baseline"]
-            + rew_dict["kp_fine"]
-            - rew_dict["action_penalty"] * self.cfg_task.action_penalty_scale
-            - rew_dict["action_grad_penalty"] * self.cfg_task.action_grad_penalty_scale
-            + rew_dict["curr_engaged"]
-            + rew_dict["curr_successes"]
-        )
+            ,rew_dict["kp_baseline"]
+            ,rew_dict["kp_fine"]
+            ,- rew_dict["action_penalty"] * self.cfg_task.action_penalty_scale
+            ,- rew_dict["action_grad_penalty"] * self.cfg_task.action_grad_penalty_scale
+            ,+ rew_dict["curr_engaged"]
+            ,+ rew_dict["curr_successes"]
+        ],dim=0)
 
         for rew_name, rew in rew_dict.items():
             self.extras[f"logs_rew_{rew_name}"] = rew.mean()

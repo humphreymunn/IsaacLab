@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from csv import writer
 import os
 import statistics
 import time
@@ -45,8 +46,8 @@ class OnPolicyRunner:
             param_value = locals().get(param_name)
             if param_value is not None:
                 rnn_params[param_name] = param_value
-        
-        self.reward_components = 1 if not multihead else env.env.reward_components
+
+        self.reward_components = 1 if not multihead else env.unwrapped.reward_components
 
         self.actor_critic: ActorCritic | ActorCriticRecurrent = actor_critic_class(
             num_obs, num_critic_obs, self.env.num_actions, self.reward_components, **self.policy_cfg, **rnn_params
@@ -114,7 +115,7 @@ class OnPolicyRunner:
         ep_infos = []
         rewbuffer = deque(maxlen=100)
         lenbuffer = deque(maxlen=100)
-        cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
+        cur_reward_sum = torch.zeros((self.env.num_envs, self.env.unwrapped.reward_components), dtype=torch.float, device=self.device)
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
 
         start_iter = self.current_learning_iteration
@@ -141,8 +142,9 @@ class OnPolicyRunner:
                         dones.to(self.device),
                     )
                     if self.reward_components == 1:
-                        rewards = rewards.sum(dim=1, keepdim=True)
-                    self.alg.process_env_step(rewards, dones, infos)
+                        self.alg.process_env_step(rewards.sum(dim=1, keepdim=True), dones, infos)
+                    else:
+                        self.alg.process_env_step(rewards, dones, infos)
 
                     if self.log_dir is not None:
                         # Book keeping
@@ -152,7 +154,7 @@ class OnPolicyRunner:
                             ep_infos.append(infos["episode"])
                         elif "log" in infos:
                             ep_infos.append(infos["log"])
-                        cur_reward_sum += torch.sum(rewards.sum(axis=1), dim=0)
+                        cur_reward_sum += torch.sum(rewards, dim=0)
                         cur_episode_length += 1
                         new_ids = (dones > 0).nonzero(as_tuple=False)
                         rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
@@ -169,12 +171,17 @@ class OnPolicyRunner:
                 self.alg.compute_returns(critic_obs)
                 #self.env.env.update_curriculum(it)
 
-            mean_value_loss, mean_surrogate_loss, mean_component_value_loss = self.alg.update()
+            update_logs = self.alg.update()
+
+
             stop = time.time()
             learn_time = stop - start
             self.current_learning_iteration = it
+            
             if self.log_dir is not None:
-                self.log(locals())
+                locs = locals()
+                locs.update(update_logs)  # <- Inject all logging stats from PPO
+                self.log(locs)
             if it % self.save_interval == 0:
                 self.save(os.path.join(self.log_dir, f"model_{it}.pt"))
             ep_infos.clear()
@@ -196,6 +203,7 @@ class OnPolicyRunner:
         ep_string = ""
         if locs["ep_infos"]:
             for key in locs["ep_infos"][0]:
+                
                 infotensor = torch.tensor([], device=self.device)
                 for ep_info in locs["ep_infos"]:
                     # handle scalar and zero dimensional tensor infos
@@ -221,6 +229,41 @@ class OnPolicyRunner:
         #    self.writer.add_scalar(f"Constraint satisfaction/{locs['constraint_names'][i]}", 1 - torch.mean(locs["constraints"][:, i]), locs["it"])
         self.writer.add_scalar("Loss/value_function", locs["mean_value_loss"], locs["it"])
         self.writer.add_scalar("Loss/surrogate", locs["mean_surrogate_loss"], locs["it"])
+
+        reward_names = self.env.unwrapped.reward_component_names
+
+        if self.reward_components > 1:
+            # Per-head value losses
+            for i, loss in enumerate(locs["mean_component_value_loss"]):
+                self.writer.add_scalar(f"Loss/ValueLoss/Component_{reward_names[i]}", loss.item(), locs["it"])
+
+            # Per-head surrogate losses
+            for i, loss in enumerate(locs["mean_component_surrogate_loss"]):
+                self.writer.add_scalar(f"Loss/SurrogateLoss/Component_{reward_names[i]}", loss.item(), locs["it"])
+
+            # Per-head advantages
+            for i, val in enumerate(locs["per_head_advantages"]):
+                self.writer.add_scalar(f"Advantage/Head_{reward_names[i]}", val.item(), locs["it"])
+
+            # Gradient norm per head
+            for i, val in enumerate(locs["grad_norms"]):
+                self.writer.add_scalar(f"Grad/Norm/Head_{reward_names[i]}", val.item(), locs["it"])
+
+            # Gradient angles between head pairs
+            for idx, angle in enumerate(locs["grad_angles"]):
+                self.writer.add_scalar(f"Grad/Angle/Pair_{idx}", angle, locs["it"])
+
+            # Projection magnitude (averaged across all grads)
+            self.writer.add_scalar("Grad/ProjectionMagnitude", locs["grad_projection_magnitude"], locs["it"])
+
+        self.writer.add_scalar("Policy/entropy", locs["mean_entropy"], locs["it"])
+        self.writer.add_scalar("Policy/kl_divergence", locs["mean_approx_kl"], locs["it"])
+        self.writer.add_scalar("Policy/clip_fraction", locs["mean_clip_fraction"], locs["it"])
+        
+        # Action magnitudes per action dim
+        for i, val in enumerate(locs["action_magnitudes"]):
+            self.writer.add_scalar(f"Action/Magnitude/Action_{i}", val.item(), locs["it"])
+            
         #for i in range(len(locs['mean_component_value_loss'])):
         #    self.writer.add_scalar(f"Loss/component_value_function_{self.env.env._episode_sums.keys()[i]}", locs['mean_component_value_loss'][i], locs["it"])
         self.writer.add_scalar("Loss/learning_rate", self.alg.learning_rate, locs["it"])
@@ -229,13 +272,21 @@ class OnPolicyRunner:
         self.writer.add_scalar("Perf/collection time", locs["collection_time"], locs["it"])
         self.writer.add_scalar("Perf/learning_time", locs["learn_time"], locs["it"])
         if len(locs["rewbuffer"]) > 0:
-            self.writer.add_scalar("Train/mean_reward", statistics.mean(locs["rewbuffer"]), locs["it"])
+            
+            self.writer.add_scalar("Train/mean_reward", statistics.mean(deque([sum(row) for row in locs["rewbuffer"]], maxlen=locs["rewbuffer"].maxlen)), locs["it"])
             self.writer.add_scalar("Train/mean_episode_length", statistics.mean(locs["lenbuffer"]), locs["it"])
             if self.logger_type != "wandb":  # wandb does not support non-integer x-axis logging
-                self.writer.add_scalar("Train/mean_reward/time", statistics.mean(locs["rewbuffer"]), self.tot_time)
+                self.writer.add_scalar("Train/mean_reward/time", statistics.mean(deque([sum(row) for row in locs["rewbuffer"]], maxlen=locs["rewbuffer"].maxlen)), self.tot_time)
                 self.writer.add_scalar(
                     "Train/mean_episode_length/time", statistics.mean(locs["lenbuffer"]), self.tot_time
                 )
+            #print(locs["rewbuffer"])
+            rew_tensor = torch.stack([torch.tensor(x, device=self.device) for x in locs["rewbuffer"]])
+            mean_rew = rew_tensor.mean(dim=0)  # shape: [7]
+
+            for idx, value in enumerate(mean_rew):
+                self.writer.add_scalar(f"Rewards/RewardComponents/{reward_names[idx]}", value, locs["it"])
+                ep_string += f"""{f'{reward_names[idx]}:':>{pad}} {value:.4f}\n"""
 
         str = f" \033[1m Learning iteration {locs['it']}/{locs['tot_iter']} \033[0m "
 
@@ -248,7 +299,7 @@ class OnPolicyRunner:
                 f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
                 f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n"""
                 f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
-                f"""{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
+                f"""{'Mean reward:':>{pad}} {statistics.mean(deque([sum(row) for row in locs["rewbuffer"]], maxlen=locs["rewbuffer"].maxlen)):.2f}\n"""
                 f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n"""
             )
             #   f"""{'Mean reward/step:':>{pad}} {locs['mean_reward']:.2f}\n"""

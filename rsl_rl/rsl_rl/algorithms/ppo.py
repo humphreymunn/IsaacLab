@@ -89,7 +89,6 @@ class PPO:
         self.transition.dones = dones
         reward_components = self.transition.rewards.shape[1]
         # Bootstrapping on time outs
-
         if "time_outs" in infos:
             self.transition.rewards += self.gamma * self.transition.values * infos["time_outs"].unsqueeze(1).to(self.device)
             
@@ -147,9 +146,14 @@ class PPO:
 
 
     def update(self):
+        multihead = self.actor_critic.num_reward_components > 1
         mean_value_loss = 0
         mean_component_value_loss = torch.zeros((self.actor_critic.num_reward_components), device=self.device)
         mean_surrogate_loss = 0
+        mean_entropy = 0.0
+        mean_approx_kl = 0.0
+        mean_clip_fraction = 0.0
+
         if self.actor_critic.is_recurrent:
             generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
         else:
@@ -177,6 +181,7 @@ class PPO:
             mu_batch = self.actor_critic.action_mean
             sigma_batch = self.actor_critic.action_std
             entropy_batch = self.actor_critic.entropy
+            mean_entropy += entropy_batch.mean().item()
 
             # KL
             if self.desired_kl is not None and self.schedule == "adaptive":
@@ -188,6 +193,7 @@ class PPO:
                         - 0.5,
                         axis=-1,
                     )
+                    mean_approx_kl += kl.mean().item()
                     kl_mean = torch.mean(kl)
 
                     if kl_mean > self.desired_kl * 2.0:
@@ -201,19 +207,29 @@ class PPO:
             # Surrogate loss
             ratio = torch.exp(actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch))
             ratio = ratio.unsqueeze(1)  # shape: [B, 1]
-            component_advantages_batch = component_advantages_batch  # shape: [B, C]
+            clip_fraction = ((ratio < 1.0 - self.clip_param) | (ratio > 1.0 + self.clip_param)).float().mean()
+            mean_clip_fraction += clip_fraction.item()
 
-            surrogate_per_component = -component_advantages_batch * ratio  # shape: [B, C]
-            surrogate_per_component_clipped = -component_advantages_batch * torch.clamp(
-                ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
-            )
+            if multihead:
+                component_advantages_batch = component_advantages_batch  # shape: [B, C]
 
-            component_surrogate_losses = torch.max(
-                surrogate_per_component, surrogate_per_component_clipped
-            )  # [B, C]
+                surrogate_per_component = -component_advantages_batch * ratio  # shape: [B, C]
+                surrogate_per_component_clipped = -component_advantages_batch * torch.clamp(
+                    ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
+                )
 
-            mean_component_surrogate_loss = component_surrogate_losses.mean(dim=0)  # [C]
-            surrogate_loss = mean_component_surrogate_loss.sum()
+                component_surrogate_losses = torch.max(
+                    surrogate_per_component, surrogate_per_component_clipped
+                )  # [B, C]
+
+                mean_component_surrogate_loss = component_surrogate_losses.mean(dim=0)  # [C]
+                surrogate_loss = mean_component_surrogate_loss.sum()
+            else:
+                surrogate_loss = -advantages_batch * ratio
+                surrogate_loss_clipped = -advantages_batch * torch.clamp(
+                    ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
+                )
+                surrogate_loss = torch.max(surrogate_loss, surrogate_loss_clipped).mean()
 
             # Value function loss
             if self.use_clipped_value_loss:
@@ -234,34 +250,38 @@ class PPO:
             
             # Compute gradients for all components in one backward pass
             # Create a tensor of ones for each component to compute gradients
-            num_components = mean_component_surrogate_loss.size(0)
-            component_grads = []
-            
-            for i in range(num_components):
-                # Use autograd.grad for more efficient gradient computation
-                grads = torch.autograd.grad(
-                    outputs=mean_component_surrogate_loss[i],
-                    inputs=self.actor_critic.parameters(),
-                    retain_graph=True,
-                    create_graph=False,
-                    allow_unused=True
-                )
-                # Convert None gradients to zero tensors
-                grads = [g if g is not None else torch.zeros_like(p) for g, p in zip(grads, self.actor_critic.parameters())]
-                component_grads.append(grads)
+            if multihead:
+                num_components = mean_component_surrogate_loss.size(0)
+                component_grads = []
+                
+                for i in range(num_components):
+                    # Use autograd.grad for more efficient gradient computation
+                    grads = torch.autograd.grad(
+                        outputs=mean_component_surrogate_loss[i],
+                        inputs=self.actor_critic.parameters(),
+                        retain_graph=True,
+                        create_graph=False,
+                        allow_unused=True
+                    )
+                    # Convert None gradients to zero tensors
+                    grads = [g if g is not None else torch.zeros_like(p) for g, p in zip(grads, self.actor_critic.parameters())]
+                    component_grads.append(grads)
 
-            # Apply PCGrad
-            projected_grads = self.apply_pcgrad(component_grads)
+                # Apply PCGrad
+                projected_grads = self.apply_pcgrad(component_grads)
 
-            # Assign PCGrad-updated gradients to model
-            for param, g in zip(self.actor_critic.parameters(), projected_grads):
-                if param.requires_grad:
-                    param.grad = g
+                # Assign PCGrad-updated gradients to model
+                for param, g in zip(self.actor_critic.parameters(), projected_grads):
+                    if param.requires_grad:
+                        param.grad = g
 
-            # Value loss + entropy (backward separately and add)
-            value_loss.backward(retain_graph=True)
-            if self.entropy_coef > 0:
-                (-self.entropy_coef * entropy_batch.mean()).backward()
+                # Value loss + entropy (backward separately and add)
+                value_loss.backward(retain_graph=True)
+                if self.entropy_coef > 0:
+                    (-self.entropy_coef * entropy_batch.mean()).backward()
+            else:
+                loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
+                loss.backward()
 
             nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
             self.optimizer.step()
@@ -279,9 +299,40 @@ class PPO:
             mean_surrogate_loss += surrogate_loss.item()
 
         num_updates = self.num_learning_epochs * self.num_mini_batches
+        mean_entropy /= num_updates
+        mean_approx_kl /= num_updates
+        mean_clip_fraction /= num_updates
         mean_value_loss /= num_updates
         mean_component_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
         self.storage.clear()
 
-        return mean_value_loss, mean_surrogate_loss, mean_component_value_loss
+        def compute_grad_angles(grads_list):
+            """Returns list of angles (in degrees) between every pair of gradient vectors."""
+            flat_grads = [torch.cat([g.view(-1) for g in grads]) for grads in grads_list]
+            angles = []
+            for i in range(len(flat_grads)):
+                for j in range(i + 1, len(flat_grads)):
+                    cos_sim = torch.nn.functional.cosine_similarity(flat_grads[i], flat_grads[j], dim=0).clamp(-1, 1)
+                    angle = torch.acos(cos_sim) * (180 / torch.pi)
+                    angles.append(angle.item())
+            return angles
+
+        return {
+            "mean_value_loss": mean_value_loss,
+            "mean_surrogate_loss": mean_surrogate_loss,
+            "mean_component_value_loss": mean_component_value_loss if multihead else None,
+            "mean_component_surrogate_loss": mean_component_surrogate_loss if multihead else None,
+            "mean_entropy": entropy_batch.mean().item(),
+            "mean_clip_fraction": (torch.logical_or(ratio < 1.0 - self.clip_param, ratio > 1.0 + self.clip_param).float().mean().item()),
+            "mean_approx_kl": kl_mean.item() if self.desired_kl is not None else 0.0,
+            "per_head_advantages": component_advantages_batch.mean(dim=0).detach().cpu() if multihead else None,
+            "grad_norms": [
+                torch.norm(torch.stack([torch.norm(g.detach()) for g in grads if g is not None]))
+                for grads in component_grads
+            ] if multihead else None,
+            "grad_angles": compute_grad_angles(component_grads) if multihead else None,
+            "grad_projection_magnitude": sum((torch.norm(g.detach()) for g in projected_grads)) / len(projected_grads) if multihead else None,
+            "action_magnitudes": actions_batch.abs().mean(dim=0).detach().cpu(),
+        }
+

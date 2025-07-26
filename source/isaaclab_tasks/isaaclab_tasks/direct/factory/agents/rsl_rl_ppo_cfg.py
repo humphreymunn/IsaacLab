@@ -13,18 +13,18 @@ class FactoryPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24  # matches horizon_length
     max_iterations = 200  # matches max_epochs
     save_interval = 10  # matches save_frequency
-    experiment_name = "test"  # from full_experiment_name
+    experiment_name = "factory"  # from full_experiment_name
     empirical_normalization = False  # using normalize_input/value manually below
 
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=1.0,  # default; not explicitly given
+        init_noise_std=0.5,  # default; not explicitly given
         actor_hidden_dims=[512, 128, 64],  # from model.network.mlp.units
         critic_hidden_dims=[512, 128, 64],  # same as actor here
         activation="elu",
     )
 
     algorithm = RslRlPpoAlgorithmCfg(
-        value_loss_coef=2.0,  # from critic_coef
+        value_loss_coef=1.0,  # from critic_coef
         use_clipped_value_loss=True,  # from clip_value
         clip_param=0.2,  # from e_clip
         entropy_coef=0.0,  # from entropy_coef
