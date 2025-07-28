@@ -47,7 +47,10 @@ class OnPolicyRunner:
             if param_value is not None:
                 rnn_params[param_name] = param_value
 
-        self.reward_components = 1 if not multihead else env.unwrapped.reward_components
+        try:
+            self.reward_components = 1 if not multihead else env.unwrapped.reward_components
+        except AttributeError:
+            self.reward_components = 1 if not multihead else env.unwrapped.cfg.reward_components
 
         self.actor_critic: ActorCritic | ActorCriticRecurrent = actor_critic_class(
             num_obs, num_critic_obs, self.env.num_actions, self.reward_components, **self.policy_cfg, **rnn_params
@@ -115,7 +118,11 @@ class OnPolicyRunner:
         ep_infos = []
         rewbuffer = deque(maxlen=100)
         lenbuffer = deque(maxlen=100)
-        cur_reward_sum = torch.zeros((self.env.num_envs, self.env.unwrapped.reward_components), dtype=torch.float, device=self.device)
+        try:
+            cur_reward_sum = torch.zeros((self.env.num_envs, self.env.unwrapped.reward_components), dtype=torch.float, device=self.device)
+        except AttributeError:
+            cur_reward_sum = torch.zeros((self.env.num_envs, self.env.unwrapped.cfg.reward_components), dtype=torch.float, device=self.device)
+
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
 
         start_iter = self.current_learning_iteration
@@ -171,8 +178,10 @@ class OnPolicyRunner:
                 self.alg.compute_returns(critic_obs)
                 #self.env.env.update_curriculum(it)
 
-            update_logs = self.alg.update()
-
+            if self.reward_components == 1:
+                update_logs = self.alg.update()
+            else:
+                update_logs = self.alg.update_multihead()
 
             stop = time.time()
             learn_time = stop - start
@@ -230,7 +239,10 @@ class OnPolicyRunner:
         self.writer.add_scalar("Loss/value_function", locs["mean_value_loss"], locs["it"])
         self.writer.add_scalar("Loss/surrogate", locs["mean_surrogate_loss"], locs["it"])
 
-        reward_names = self.env.unwrapped.reward_component_names
+        try:
+            reward_names = self.env.unwrapped.reward_component_names
+        except AttributeError:
+            reward_names = self.env.unwrapped.cfg.reward_component_names
 
         if self.reward_components > 1:
             # Per-head value losses

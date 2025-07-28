@@ -42,7 +42,8 @@ class FrankaReachEnvCfg(ReachEnvCfg):
         # end-effector is along z-direction
         self.commands.ee_pose.body_name = "panda_hand"
         self.commands.ee_pose.ranges.pitch = (math.pi, math.pi)
-
+        self.reward_components = 5
+        self.reward_component_names = ["end_effector_position_tracking", "end_effector_position_tracking_fine_grained", "end_effector_orientation_tracking", "action_rate", "joint_vel"]
 
 @configclass
 class FrankaReachEnvCfg_PLAY(FrankaReachEnvCfg):

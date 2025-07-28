@@ -36,6 +36,9 @@ class InHandManipulationEnv(DirectRLEnv):
         self.prev_targets = torch.zeros((self.num_envs, self.num_hand_dofs), dtype=torch.float, device=self.device)
         self.cur_targets = torch.zeros((self.num_envs, self.num_hand_dofs), dtype=torch.float, device=self.device)
 
+        self.reward_components = 5
+        self.reward_component_names = ["dist_rew", "rot_rew", "action_penalty", "success_orientation","fall_penalty"]
+
         # list of actuated joints
         self.actuated_dof_indices = list()
         for joint_name in cfg.actuated_joint_names:
@@ -403,20 +406,26 @@ def compute_rewards(
     dist_rew = goal_dist * dist_reward_scale
     rot_rew = 1.0 / (torch.abs(rot_dist) + rot_eps) * rot_reward_scale
 
-    action_penalty = torch.sum(actions**2, dim=-1)
-
-    # Total reward is: position distance + orientation alignment + action regularization + success bonus + fall penalty
-    reward = dist_rew + rot_rew + action_penalty * action_penalty_scale
+    action_penalty = torch.sum(actions**2, dim=-1) * action_penalty_scale
 
     # Find out which envs hit the goal and update successes count
     goal_resets = torch.where(torch.abs(rot_dist) <= success_tolerance, torch.ones_like(reset_goal_buf), reset_goal_buf)
     successes = successes + goal_resets
 
     # Success bonus: orientation is within `success_tolerance` of goal orientation
-    reward = torch.where(goal_resets == 1, reward + reach_goal_bonus, reward)
+    success_bonus = torch.where(goal_resets == 1, reach_goal_bonus, torch.zeros_like(goal_resets, dtype=torch.float))
 
     # Fall penalty: distance to the goal is larger than a threshold
-    reward = torch.where(goal_dist >= fall_dist, reward + fall_penalty, reward)
+    fall_penalty_reward = torch.where(goal_dist >= fall_dist, fall_penalty, torch.zeros_like(goal_dist))
+
+    # Stack reward components into tensor of shape (envs, 5)
+    reward = torch.stack([
+        dist_rew,
+        rot_rew,
+        action_penalty,
+        success_bonus,
+        fall_penalty_reward
+    ], dim=-1)
 
     # Check env termination conditions, including maximum success number
     resets = torch.where(goal_dist >= fall_dist, torch.ones_like(reset_buf), reset_buf)
@@ -429,5 +438,5 @@ def compute_rewards(
         av_factor * finished_cons_successes / num_resets + (1.0 - av_factor) * consecutive_successes,
         consecutive_successes,
     )
-
+    
     return reward, goal_resets, successes, cons_successes

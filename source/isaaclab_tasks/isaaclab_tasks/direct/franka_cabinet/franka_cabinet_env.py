@@ -192,6 +192,8 @@ class FrankaCabinetEnv(DirectRLEnv):
 
             return torch.tensor([px, py, pz, qw, qx, qy, qz], device=device)
 
+        self.reward_components = 9
+        self.reward_component_names = ["dist_reward", "rot_reward", "open_reward", "action_penalty","lfinger_dist","rfinger_dist", "draw_open_little", "draw_open_medium", "draw_open_large"]
         self.dt = self.cfg.sim.dt * self.cfg.decimation
 
         # create auxiliary variables for computing applied action, observations and rewards
@@ -448,28 +450,43 @@ class FrankaCabinetEnv(DirectRLEnv):
         finger_dist_penalty += torch.where(lfinger_dist < 0, lfinger_dist, torch.zeros_like(lfinger_dist))
         finger_dist_penalty += torch.where(rfinger_dist < 0, rfinger_dist, torch.zeros_like(rfinger_dist))
 
-        rewards = (
-            dist_reward_scale * dist_reward
-            + rot_reward_scale * rot_reward
-            + open_reward_scale * open_reward
-            + finger_reward_scale * finger_dist_penalty
-            - action_penalty_scale * action_penalty
-        )
+        # Individual reward components
+        dist_reward_component = dist_reward_scale * dist_reward
+        rot_reward_component = rot_reward_scale * rot_reward
+        open_reward_component = open_reward_scale * open_reward
+        action_penalty_component = -action_penalty_scale * action_penalty
+        lfinger_dist_component = finger_reward_scale * lfinger_dist
+        rfinger_dist_component = finger_reward_scale * rfinger_dist
+        finger_dist_penalty_component = finger_reward_scale * finger_dist_penalty
+        
+        # Bonus rewards
+        bonus_01 = torch.where(cabinet_dof_pos[:, 3] > 0.01, torch.tensor(0.25, device=self.device), torch.tensor(0.0, device=self.device))
+        bonus_20 = torch.where(cabinet_dof_pos[:, 3] > 0.2, torch.tensor(0.25, device=self.device), torch.tensor(0.0, device=self.device))
+        bonus_35 = torch.where(cabinet_dof_pos[:, 3] > 0.35, torch.tensor(0.25, device=self.device), torch.tensor(0.0, device=self.device))
+        
+        # Stack all reward components into tensor of shape (envs, 9)
+        rewards = torch.stack([
+            dist_reward_component,
+            rot_reward_component,
+            open_reward_component,
+            action_penalty_component,
+            lfinger_dist_component,
+            rfinger_dist_component,
+            #finger_dist_penalty_component,
+            bonus_01,
+            bonus_20,
+            bonus_35
+        ], dim=1)
 
         self.extras["log"] = {
-            "dist_reward": (dist_reward_scale * dist_reward).mean(),
-            "rot_reward": (rot_reward_scale * rot_reward).mean(),
-            "open_reward": (open_reward_scale * open_reward).mean(),
-            "action_penalty": (-action_penalty_scale * action_penalty).mean(),
-            "left_finger_distance_reward": (finger_reward_scale * lfinger_dist).mean(),
-            "right_finger_distance_reward": (finger_reward_scale * rfinger_dist).mean(),
-            "finger_dist_penalty": (finger_reward_scale * finger_dist_penalty).mean(),
+            "dist_reward": dist_reward_component.mean(),
+            "rot_reward": rot_reward_component.mean(),
+            "open_reward": open_reward_component.mean(),
+            "action_penalty": action_penalty_component.mean(),
+            "left_finger_distance_reward": lfinger_dist_component.mean(),
+            "right_finger_distance_reward": rfinger_dist_component.mean(),
+            "finger_dist_penalty": finger_dist_penalty_component.mean(),
         }
-
-        # bonus for opening drawer properly
-        rewards = torch.where(cabinet_dof_pos[:, 3] > 0.01, rewards + 0.25, rewards)
-        rewards = torch.where(cabinet_dof_pos[:, 3] > 0.2, rewards + 0.25, rewards)
-        rewards = torch.where(cabinet_dof_pos[:, 3] > 0.35, rewards + 0.25, rewards)
 
         return rewards
 

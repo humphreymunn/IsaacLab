@@ -485,7 +485,7 @@ class FactoryEnv(DirectRLEnv):
             self.extras["success_times"] = success_times
 
         self.prev_actions = self.actions.clone()
-        return rew_buf.T
+        return rew_buf#.T
 
     def _update_rew_buf(self, curr_successes):
         """Compute reward at current timestep."""
@@ -512,7 +512,7 @@ class FactoryEnv(DirectRLEnv):
         )
         rew_dict["curr_successes"] = curr_successes.clone().float()
         
-        rew_buf = torch.stack([
+        '''rew_buf = torch.stack([
             rew_dict["kp_coarse"]
             ,rew_dict["kp_baseline"]
             ,rew_dict["kp_fine"]
@@ -520,7 +520,17 @@ class FactoryEnv(DirectRLEnv):
             ,- rew_dict["action_grad_penalty"] * self.cfg_task.action_grad_penalty_scale
             ,+ rew_dict["curr_engaged"]
             ,+ rew_dict["curr_successes"]
-        ],dim=0)
+        ],dim=0)'''
+
+        rew_buf = (
+            rew_dict["kp_coarse"]
+            + rew_dict["kp_baseline"]
+            +rew_dict["kp_fine"]
+            - rew_dict["action_penalty"] * self.cfg_task.action_penalty_scale
+            - rew_dict["action_grad_penalty"] * self.cfg_task.action_grad_penalty_scale
+            + rew_dict["curr_engaged"]
+            + rew_dict["curr_successes"]
+        )
 
         for rew_name, rew in rew_dict.items():
             self.extras[f"logs_rew_{rew_name}"] = rew.mean()

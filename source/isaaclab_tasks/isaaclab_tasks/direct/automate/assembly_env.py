@@ -37,6 +37,9 @@ class AssemblyEnv(DirectRLEnv):
         cfg.state_space = sum([STATE_DIM_CFG[state] for state in cfg.state_order])
         self.cfg_task = cfg.tasks[cfg.task_name]
 
+        self.reward_components = 3
+        self.reward_component_names = ["sdf", "imitation", "curr_successes"]
+
         super().__init__(cfg, render_mode, **kwargs)
 
         self._set_body_inertias()
@@ -246,7 +249,9 @@ class AssemblyEnv(DirectRLEnv):
             # offset each trajectory to be relative to the goal
             eef_pos_traj.append(curr_ee_traj - curr_ee_goal)
 
-        self.eef_pos_traj = torch.tensor(eef_pos_traj, dtype=torch.float32, device=self.device).squeeze()
+        self.eef_pos_traj = torch.tensor(
+            np.array(eef_pos_traj), dtype=torch.float32, device=self.device
+        ).squeeze()
 
     def _get_keypoint_offsets(self, num_keypoints):
         """Get uniformly-spaced keypoints along a line of unit length, centered at 0."""
@@ -585,7 +590,7 @@ class AssemblyEnv(DirectRLEnv):
                     exit(0)
 
         self.prev_actions = self.actions.clone()
-        return rew_buf
+        return rew_buf.T
 
     def _update_rew_buf(self, curr_successes):
         """Compute reward at current timestep."""
@@ -622,6 +627,11 @@ class AssemblyEnv(DirectRLEnv):
             + self.cfg_task.imitation_rwd_scale * rew_dict["imitation"]
             + rew_dict["curr_successes"]
         )
+        rew_buf = torch.stack([
+            self.cfg_task.sdf_rwd_scale * rew_dict["sdf"]
+            ,self.cfg_task.imitation_rwd_scale * rew_dict["imitation"]
+            ,rew_dict["curr_successes"]
+        ],dim=0)
 
         for rew_name, rew in rew_dict.items():
             self.extras[f"logs_rew_{rew_name}"] = rew.mean()
@@ -792,7 +802,7 @@ class AssemblyEnv(DirectRLEnv):
         fixed_asset_pos_noise = torch.randn((len(env_ids), 3), dtype=torch.float32, device=self.device)
         fixed_asset_pos_rand = torch.tensor(self.cfg.obs_rand.fixed_asset_pos, dtype=torch.float32, device=self.device)
         fixed_asset_pos_noise = fixed_asset_pos_noise @ torch.diag(fixed_asset_pos_rand)
-        self.init_fixed_pos_obs_noise[:] = fixed_asset_pos_noise
+        self.init_fixed_pos_obs_noise[env_ids] = fixed_asset_pos_noise
 
         self.step_sim_no_action()
 
@@ -834,7 +844,7 @@ class AssemblyEnv(DirectRLEnv):
         held_state[env_ids, 3:7] = self.fixed_quat[env_ids].clone()
         held_state[env_ids, 7:] = 0.0
 
-        held_state[env_ids, 2] += self.curriculum_disp
+        held_state[env_ids, 2] += self.curriculum_disp[env_ids]
 
         plug_in_freespace_idx = torch.argwhere(self.curriculum_disp > self.disassembly_dists)
         held_state[plug_in_freespace_idx, :2] += self.held_pos_init_rand[plug_in_freespace_idx, :2]
