@@ -231,6 +231,8 @@ class PPO:
                 value_losses_clipped = (value_clipped - returns_batch).pow(2)
                 dim_use = 2 if len(value_losses.shape) > 2 else 1
                 value_loss = torch.max(value_losses.sum(dim=dim_use), value_losses_clipped.sum(dim=dim_use)).mean()
+                component_value_loss = torch.max(value_losses, value_losses_clipped).mean(dim=0)  # shape: [C]
+                mean_component_value_loss += component_value_loss.detach()
             else:
                 assert False # not implemented
                 value_loss = (returns_batch - value_batch).pow(2).sum(dim=2).mean()
@@ -400,6 +402,9 @@ class PPO:
                 value_losses_clipped = (value_clipped - returns_batch).pow(2)
                 dim_use = 2 if len(value_losses.shape) > 2 else 1
                 value_loss = torch.max(value_losses.sum(dim=dim_use), value_losses_clipped.sum(dim=dim_use)).mean()
+                component_value_loss = torch.max(value_losses, value_losses_clipped).mean(dim=0)  # shape: [C]
+                mean_component_value_loss += component_value_loss.detach()
+
             else:
                 assert False # not implemented
                 value_loss = (returns_batch - value_batch).pow(2).sum(dim=2).mean()

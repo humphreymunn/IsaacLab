@@ -80,6 +80,9 @@ class FrankaCabinetEnvCfg(CabinetEnvCfg):
         self.rewards.grasp_handle.params["open_joint_pos"] = 0.04
         self.rewards.grasp_handle.params["asset_cfg"].joint_names = ["panda_finger_.*"]
 
+        self.reward_components = 9
+        self.reward_component_names = ["approach_ee_handle", "align_ee_handle", "approach_gripper_handle", "align_grasp_around_handle", "grasp_handle", "open_drawer_bonus", "multi_stage_open_drawer", "action_rate_l2", "joint_vel"]
+
 
 @configclass
 class FrankaCabinetEnvCfg_PLAY(FrankaCabinetEnvCfg):

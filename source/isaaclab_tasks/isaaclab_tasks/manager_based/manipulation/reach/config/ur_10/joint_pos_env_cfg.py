@@ -43,7 +43,8 @@ class UR10ReachEnvCfg(ReachEnvCfg):
         # end-effector is along x-direction
         self.commands.ee_pose.body_name = "ee_link"
         self.commands.ee_pose.ranges.pitch = (math.pi / 2, math.pi / 2)
-
+        self.reward_components = 5
+        self.reward_component_names = ["end_effector_position_tracking", "end_effector_position_tracking_fine_grained", "end_effector_orientation_tracking", "action_rate", "joint_vel"]
 
 @configclass
 class UR10ReachEnvCfg_PLAY(UR10ReachEnvCfg):

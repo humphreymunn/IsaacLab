@@ -17,6 +17,7 @@ from isaaclab_tasks.manager_based.locomotion.velocity.velocity_env_cfg import Lo
 
 @configclass
 class DigitRewards:
+    
     termination_penalty = RewardTermCfg(
         func=mdp.is_terminated,
         weight=-100.0,

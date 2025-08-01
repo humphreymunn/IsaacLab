@@ -55,7 +55,7 @@ from packaging import version
 
 # for distributed training, check minimum supported rsl-rl version
 RSL_RL_VERSION = "2.3.1"
-installed_version = metadata.version("rsl-rl-lib")
+installed_version = metadata.version("rsl_rl")
 if args_cli.distributed and version.parse(installed_version) < version.parse(RSL_RL_VERSION):
     if platform.system() == "Windows":
         cmd = [r".\isaaclab.bat", "-p", "-m", "pip", "install", f"rsl-rl-lib=={RSL_RL_VERSION}"]
@@ -138,6 +138,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         log_dir += f"_{agent_cfg.run_name}"
     log_dir = os.path.join(log_root_path, log_dir)
     log_dir += f"_{args_cli.use_critic_multi}"
+    log_dir += f"_{args_cli.seed}" if args_cli.seed is not None else ""
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
@@ -166,7 +167,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
     # create runner from rsl-rl
-    runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+    runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device, multihead=args_cli.use_critic_multi)
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
     # load the checkpoint

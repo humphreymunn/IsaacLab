@@ -61,7 +61,7 @@ class RewardManager(ManagerBase):
         self.reward_components = len(self._term_names)
         # create buffer for managing reward per environment
         #self._reward_buf = torch.zeros(self.num_envs, self.reward_components, dtype=torch.float, device=self.device)
-        self._reward_buf = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        self._reward_buf = torch.zeros(self.num_envs, self.reward_components, dtype=torch.float, device=self.device)
 
         # Buffer which stores the current step reward for each term for each environment
         self._step_reward = torch.zeros((self.num_envs, len(self._term_names)), dtype=torch.float, device=self.device)
@@ -150,8 +150,8 @@ class RewardManager(ManagerBase):
             # compute term's value
             value = term_cfg.func(self._env, **term_cfg.params) * term_cfg.weight * dt
             # update total reward
-            #self._reward_buf[:,term_idx] += value
-            self._reward_buf += value
+            self._reward_buf[:,term_idx] += value
+            #self._reward_buf += value
             # update episodic sum
             self._episode_sums[name] += value
 
