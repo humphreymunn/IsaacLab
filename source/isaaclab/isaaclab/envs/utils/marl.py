@@ -132,6 +132,9 @@ def multi_agent_to_single_agent(env: DirectMARLEnv, state_as_observation: bool =
         def close(self) -> None:
             self.env.close()
 
+        def _get_observations(self):
+            return {"policy": self.env.state()}
+
     return Env(env)
 
 

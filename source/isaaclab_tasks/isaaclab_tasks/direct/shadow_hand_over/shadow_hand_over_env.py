@@ -25,7 +25,7 @@ class ShadowHandOverEnv(DirectMARLEnv):
 
     def __init__(self, cfg: ShadowHandOverEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
-
+    
         self.num_hand_dofs = self.right_hand.num_joints
 
         # buffers for position targets
@@ -81,7 +81,9 @@ class ShadowHandOverEnv(DirectMARLEnv):
         self.x_unit_tensor = torch.tensor([1, 0, 0], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
         self.y_unit_tensor = torch.tensor([0, 1, 0], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
         self.z_unit_tensor = torch.tensor([0, 0, 1], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
-
+        self.reward_components = 9
+        self.reward_component_names = ["dist_reward", "rot_reward", "open_reward", "action_penalty","lfinger_dist","rfinger_dist", "draw_open_little", "draw_open_medium", "draw_open_large"]
+        
     def _setup_scene(self):
         # add hand, in-hand object, and goal object
         self.right_hand = Articulation(self.cfg.right_robot_cfg)

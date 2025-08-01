@@ -5,7 +5,7 @@
 
 from isaaclab.utils import configclass
 
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
+from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg, RslRlPpoActorCriticRecurrentCfg
 
 
 @configclass
@@ -16,10 +16,13 @@ class FactoryPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     experiment_name = "factory"  # from full_experiment_name
     empirical_normalization = False  # using normalize_input/value manually below
 
-    policy = RslRlPpoActorCriticCfg(
+    policy = RslRlPpoActorCriticRecurrentCfg(
+        rnn_type="lstm",
+        rnn_hidden_dim=1024,
+        rnn_num_layers=2,
         init_noise_std=1.0,  # default; not explicitly given
-        actor_hidden_dims=[256, 128, 64],
-        critic_hidden_dims=[256, 128, 64],  # same as actor here
+        actor_hidden_dims=[512, 128, 64],
+        critic_hidden_dims=[512, 128, 64],  # same as actor here
         activation="elu",
     )
 

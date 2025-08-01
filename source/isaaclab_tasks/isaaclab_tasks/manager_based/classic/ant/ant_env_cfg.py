@@ -182,3 +182,14 @@ class AntEnvCfg(ManagerBasedRLEnvCfg):
         self.sim.physics_material.static_friction = 1.0
         self.sim.physics_material.dynamic_friction = 1.0
         self.sim.physics_material.restitution = 0.0
+        # get number of rewards in the cfg
+        self.reward_components = sum(
+            isinstance(getattr(self.rewards, attr), RewTerm)
+            for attr in dir(self.rewards)
+            if not attr.startswith("__")  # skip dunder attributes
+        )
+        # set the names of the reward components
+        self.reward_component_names = [
+            attr for attr in dir(self.rewards)
+            if isinstance(getattr(self.rewards, attr), RewTerm) and not attr.startswith("__")
+        ]
