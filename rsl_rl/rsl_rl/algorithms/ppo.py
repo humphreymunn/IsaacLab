@@ -87,7 +87,7 @@ class PPO:
     def process_env_step(self, rewards, dones, infos):
         self.transition.rewards = rewards.clone()
         self.transition.dones = dones
-        reward_components = self.transition.rewards.shape[1]
+        #reward_components = self.transition.rewards.shape[1]
         # Bootstrapping on time outs
         if "time_outs" in infos:
             self.transition.rewards += self.gamma * self.transition.values * infos["time_outs"].unsqueeze(1).to(self.device)
@@ -101,6 +101,11 @@ class PPO:
         #self.ci_max = self.storage.adjust_rewards(self.ci_max, pi_curr)
         last_values = self.actor_critic.evaluate(last_critic_obs).detach()
         self.storage.compute_returns(last_values, self.gamma, self.lam)
+
+    def compute_returns_multi(self, last_critic_obs):
+        #self.ci_max = self.storage.adjust_rewards(self.ci_max, pi_curr)
+        last_values = self.actor_critic.evaluate(last_critic_obs).detach()
+        self.storage.compute_returns_multi(last_values, self.gamma, self.lam)
 
     def apply_pcgrad(self, objective_grads):
         num_objectives = len(objective_grads)
@@ -402,8 +407,8 @@ class PPO:
                 value_losses_clipped = (value_clipped - returns_batch).pow(2)
                 dim_use = 2 if len(value_losses.shape) > 2 else 1
                 value_loss = torch.max(value_losses.sum(dim=dim_use), value_losses_clipped.sum(dim=dim_use)).mean()
-                component_value_loss = torch.max(value_losses, value_losses_clipped).mean(dim=0)  # shape: [C]
-                mean_component_value_loss += component_value_loss.detach()
+                #component_value_loss = torch.max(value_losses, value_losses_clipped).mean(dim=0)  # shape: [C]
+                #mean_component_value_loss += component_value_loss.detach()
 
             else:
                 assert False # not implemented

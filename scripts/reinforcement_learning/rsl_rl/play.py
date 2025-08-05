@@ -30,6 +30,8 @@ parser.add_argument(
     help="Use the pre-trained checkpoint from Nucleus.",
 )
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
+parser.add_argument("--use_critic_multi", action="store_true", default=False)
+
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -125,7 +127,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     # load previously trained model
-    ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+    ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device, multihead=args_cli.use_critic_multi)
     ppo_runner.load(resume_path)
 
     # obtain the trained policy for inference
@@ -152,7 +154,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # reset environment
     obs, _ = env.get_observations()
     timestep = 0
+    total_reward = torch.zeros(env.num_envs, device=env.device)
+    episode_rewards = []
+    episodes_completed = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    
     # simulate environment
+    start_time_global = time.time()
+    
     while simulation_app.is_running():
         start_time = time.time()
         # run everything in inference mode
@@ -160,7 +168,26 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             # agent stepping
             actions = policy(obs)
             # env stepping
-            obs, _, _, _ = env.step(actions)
+            obs, rewards, dones, _ = env.step(actions)
+            
+            # accumulate rewards for each environment
+            total_reward += rewards.sum(dim=1)
+            
+            # check for episode completion
+            if dones.any():
+                # log rewards for completed episodes
+                completed_envs = dones.nonzero(as_tuple=True)[0]
+                for env_idx in completed_envs:
+                    if not episodes_completed[env_idx]:
+                        episode_rewards.append(total_reward[env_idx].item())
+                        episodes_completed[env_idx] = True
+                
+                # check if all environments have completed at least one episode
+                if episodes_completed.all():
+                    avg_reward = sum(episode_rewards) / len(episode_rewards)
+                    print(f"[INFO] All {env.num_envs} environments completed one episode. Average reward: {avg_reward:.4f}")
+                    break
+        
         if args_cli.video:
             timestep += 1
             # Exit the play loop after recording one video
@@ -171,6 +198,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         sleep_time = dt - (time.time() - start_time)
         if args_cli.real_time and sleep_time > 0:
             time.sleep(sleep_time)
+
+    # print final reward statistics
+    if episode_rewards:
+        print(f"[INFO] Final average episode reward: {sum(episode_rewards) / len(episode_rewards):.4f}")
+        print(f"[INFO] Total episodes completed: {len(episode_rewards)}")
 
     # close the simulator
     env.close()

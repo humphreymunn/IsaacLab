@@ -118,6 +118,118 @@ class OnPolicyRunner:
         ep_infos = []
         rewbuffer = deque(maxlen=100)
         lenbuffer = deque(maxlen=100)
+        cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
+        cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
+
+        start_iter = self.current_learning_iteration
+        tot_iter = start_iter + num_learning_iterations
+        #pi_curr = 0.05 # gradually update this 
+
+        for it in range(start_iter, tot_iter):
+            start = time.time()
+            # Rollout
+            with torch.inference_mode():
+                for i in range(self.num_steps_per_env):
+                    #constraints_nonzero = constraints[torch.nonzero(constraints,as_tuple=True)]
+                    actions = self.alg.act(obs, critic_obs)
+                    obs, rewards, dones, infos = self.env.step(actions)
+                    rewards = rewards.sum(dim=1, keepdim=True)  # sum rewards across components
+                    obs = self.obs_normalizer(obs)
+                    if "critic" in infos["observations"]:
+                        critic_obs = self.critic_obs_normalizer(infos["observations"]["critic"])
+                    else:
+                        critic_obs = obs
+                    obs, critic_obs, rewards, dones = (
+                        obs.to(self.device),
+                        critic_obs.to(self.device),
+                        rewards.to(self.device),
+                        dones.to(self.device),
+                    )
+                    self.alg.process_env_step(rewards, dones, infos)
+
+                    if self.log_dir is not None:
+                        # Book keeping
+                        # note: we changed logging to use "log" instead of "episode" to avoid confusion with
+                        # different types of logging data (rewards, curriculum, etc.)
+                        if "episode" in infos:
+                            ep_infos.append(infos["episode"])
+                        elif "log" in infos:
+                            ep_infos.append(infos["log"])
+                        cur_reward_sum += torch.sum(rewards, dim=0)
+                        cur_episode_length += 1
+                        new_ids = (dones > 0).nonzero(as_tuple=False)
+                        rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
+                        lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
+                        cur_reward_sum[new_ids] = 0
+                        cur_episode_length[new_ids] = 0
+
+                stop = time.time()
+                collection_time = stop - start
+
+                # Learning step
+                start = stop
+                #pi_curr = min(0.25, pi_curr + 0.0025) 
+                self.alg.compute_returns(critic_obs)
+                #self.env.env.update_curriculum(it)
+
+       
+            update_logs = self.alg.update()
+
+            stop = time.time()
+            learn_time = stop - start
+            self.current_learning_iteration = it
+            
+            if self.log_dir is not None:
+                locs = locals()
+                locs.update(update_logs)  # <- Inject all logging stats from PPO
+                self.log(locs)
+            if it % self.save_interval == 0:
+                self.save(os.path.join(self.log_dir, f"model_{it}.pt"))
+            ep_infos.clear()
+            if it == start_iter:
+                # obtain all the diff files
+                git_file_paths = store_code_state(self.log_dir, self.git_status_repos)
+                # if possible store them to wandb
+                if self.logger_type in ["wandb", "neptune"] and git_file_paths:
+                    for path in git_file_paths:
+                        self.writer.save_file(path)
+
+        self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration}.pt"))
+
+    def learn_multi(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):
+        # initialize writer
+        if self.log_dir is not None and self.writer is None:
+            # Launch either Tensorboard or Neptune & Tensorboard summary writer(s), default: Tensorboard.
+            self.logger_type = self.cfg.get("logger", "tensorboard")
+            self.logger_type = self.logger_type.lower()
+
+            if self.logger_type == "neptune":
+                from rsl_rl.utils.neptune_utils import NeptuneSummaryWriter
+
+                self.writer = NeptuneSummaryWriter(log_dir=self.log_dir, flush_secs=10, cfg=self.cfg)
+                self.writer.log_config(self.env.cfg, self.cfg, self.alg_cfg, self.policy_cfg)
+            elif self.logger_type == "wandb":
+                from rsl_rl.utils.wandb_utils import WandbSummaryWriter
+
+                self.writer = WandbSummaryWriter(log_dir=self.log_dir, flush_secs=10, cfg=self.cfg)
+                self.writer.log_config(self.env.cfg, self.cfg, self.alg_cfg, self.policy_cfg)
+            elif self.logger_type == "tensorboard":
+                self.writer = TensorboardSummaryWriter(log_dir=self.log_dir, flush_secs=10)
+            else:
+                raise AssertionError("logger type not found")
+
+        if init_at_random_ep_len:
+            self.env.episode_length_buf = torch.randint_like(
+                self.env.episode_length_buf, high=int(self.env.max_episode_length)
+            )
+        obs, extras = self.env.get_observations()
+        critic_obs = extras["observations"].get("critic", obs)
+        obs, critic_obs = obs.to(self.device), critic_obs.to(self.device)
+        self.train_mode()  # switch to train mode (for dropout for example)
+
+        ep_infos = []
+        rewbuffer = deque(maxlen=100)
+        lenbuffer = deque(maxlen=100)
         try:
             cur_reward_sum = torch.zeros((self.env.num_envs, self.env.unwrapped.reward_components), dtype=torch.float, device=self.device)
         except AttributeError:
@@ -174,8 +286,8 @@ class OnPolicyRunner:
 
                 # Learning step
                 start = stop
-                #pi_curr = min(0.25, pi_curr + 0.0025) 
-                self.alg.compute_returns(critic_obs)
+                #pi_curr = min(0.25, pi_curr + 0.0025)
+                self.alg.compute_returns_multi(critic_obs)
                 #self.env.env.update_curriculum(it)
 
             if self.reward_components == 1:
@@ -284,36 +396,55 @@ class OnPolicyRunner:
         self.writer.add_scalar("Perf/collection time", locs["collection_time"], locs["it"])
         self.writer.add_scalar("Perf/learning_time", locs["learn_time"], locs["it"])
         if len(locs["rewbuffer"]) > 0:
-            
-            self.writer.add_scalar("Train/mean_reward", statistics.mean(deque([sum(row) for row in locs["rewbuffer"]], maxlen=locs["rewbuffer"].maxlen)), locs["it"])
+            if self.reward_components > 1:
+                self.writer.add_scalar("Train/mean_reward", statistics.mean(deque([sum(row) for row in locs["rewbuffer"]], maxlen=locs["rewbuffer"].maxlen)), locs["it"])
+            else:
+                self.writer.add_scalar("Train/mean_reward", statistics.mean(locs["rewbuffer"]), locs["it"])           
             self.writer.add_scalar("Train/mean_episode_length", statistics.mean(locs["lenbuffer"]), locs["it"])
             if self.logger_type != "wandb":  # wandb does not support non-integer x-axis logging
-                self.writer.add_scalar("Train/mean_reward/time", statistics.mean(deque([sum(row) for row in locs["rewbuffer"]], maxlen=locs["rewbuffer"].maxlen)), self.tot_time)
+                if self.reward_components > 1:
+                    self.writer.add_scalar("Train/mean_reward/time", statistics.mean(deque([sum(row) for row in locs["rewbuffer"]], maxlen=locs["rewbuffer"].maxlen)), self.tot_time)
+                else:
+                    self.writer.add_scalar("Train/mean_reward/time", statistics.mean(locs["rewbuffer"]), self.tot_time)
                 self.writer.add_scalar(
                     "Train/mean_episode_length/time", statistics.mean(locs["lenbuffer"]), self.tot_time
                 )
             #print(locs["rewbuffer"])
-            rew_tensor = torch.stack([torch.tensor(x, device=self.device) for x in locs["rewbuffer"]])
-            mean_rew = rew_tensor.mean(dim=0)  # shape: [7]
+            if self.reward_components > 1:
+                rew_tensor = torch.stack([torch.tensor(x, device=self.device) for x in locs["rewbuffer"]])
+                mean_rew = rew_tensor.mean(dim=0)  # shape: [7]
 
-            for idx, value in enumerate(mean_rew):
-                self.writer.add_scalar(f"Rewards/RewardComponents/{reward_names[idx]}", value, locs["it"])
-                ep_string += f"""{f'{reward_names[idx]}:':>{pad}} {value:.4f}\n"""
+                for idx, value in enumerate(mean_rew):
+                    self.writer.add_scalar(f"Rewards/RewardComponents/{reward_names[idx]}", value, locs["it"])
+                    ep_string += f"""{f'{reward_names[idx]}:':>{pad}} {value:.4f}\n"""
 
         str = f" \033[1m Learning iteration {locs['it']}/{locs['tot_iter']} \033[0m "
 
         if len(locs["rewbuffer"]) > 0:
-            log_string = (
-                f"""{'#' * width}\n"""
-                f"""{str.center(width, ' ')}\n\n"""
-                f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs[
-                            'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
-                f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
-                f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n"""
-                f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
-                f"""{'Mean reward:':>{pad}} {statistics.mean(deque([sum(row) for row in locs["rewbuffer"]], maxlen=locs["rewbuffer"].maxlen)):.2f}\n"""
-                f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n"""
-            )
+            if self.reward_components > 1:
+                log_string = (
+                    f"""{'#' * width}\n"""
+                    f"""{str.center(width, ' ')}\n\n"""
+                    f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs[
+                                'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
+                    f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
+                    f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n"""
+                    f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
+                    f"""{'Mean reward:':>{pad}} {statistics.mean(deque([sum(row) for row in locs["rewbuffer"]], maxlen=locs["rewbuffer"].maxlen)):.2f}\n""" if self.reward_components > 1 else f"""{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
+                    f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n"""
+                )
+            else:
+                log_string = (
+                    f"""{'#' * width}\n"""
+                    f"""{str.center(width, ' ')}\n\n"""
+                    f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs[
+                                'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
+                    f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
+                    f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n"""
+                    f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
+                    f"""{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
+                    f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n"""
+                )
             #   f"""{'Mean reward/step:':>{pad}} {locs['mean_reward']:.2f}\n"""
             #   f"""{'Mean episode length/episode:':>{pad}} {locs['mean_trajectory_length']:.2f}\n""")
         else:
