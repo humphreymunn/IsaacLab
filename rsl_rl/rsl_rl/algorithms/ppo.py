@@ -116,30 +116,40 @@ class PPO:
             for grad_list in objective_grads
         ])  # [num_objectives, param_dim]
 
-        # Dot product matrix
-        dot_prods = flat_grads @ flat_grads.T
-        norms_sq = torch.diag(dot_prods).unsqueeze(0) + 1e-10  # [1, num_objectives]
-
-        # Create masks for conflicts (dot < 0)
-        conflict_mask = dot_prods < 0
-
         # Randomize order of projections
-        rand_perm = [torch.randperm(num_objectives) for _ in range(num_objectives)]
+        rand_perm = torch.randperm(num_objectives)
         projected_grads = flat_grads.clone()
 
-        for i in range(num_objectives):
-            j_indices = rand_perm[i][rand_perm[i] != i]
+        for i_idx in range(num_objectives):
+            i = rand_perm[i_idx]
             g_i = projected_grads[i]
-
-            for j in j_indices:
-                if conflict_mask[i, j]:
-                    proj_coeff = dot_prods[i, j] / norms_sq[0, j]
-                    g_i = g_i - proj_coeff * flat_grads[j]
+            
+            for j_idx in range(i_idx):
+                j = rand_perm[j_idx]
+                g_j = projected_grads[j]  # Use already projected gradient
+                
+                # Check for conflict
+                dot_prod = torch.dot(g_i, g_j)
+                if dot_prod < 0:
+                    # Project g_i onto g_j
+                    proj_coeff = dot_prod / (g_j.norm() ** 2 + 1e-10)
+                    g_i = g_i - proj_coeff * g_j
+            
             projected_grads[i] = g_i
 
-        # Average and reshape
-        combined_flat = projected_grads.mean(dim=0)
+        # === Norm Preservation ===
+        # Compute the norm of the average of the original gradients
+        average_grad = flat_grads.mean(dim=0)
+        target_norm = average_grad.norm()  # The norm of the average gradient
+        current_norm = projected_grads.norm(dim=1).mean()  # The average norm of the projected gradients
 
+        if current_norm > 1e-6:
+            # Scale the combined gradient to match the norm of the average gradient
+            combined_flat = projected_grads.mean(dim=0) * (target_norm / current_norm)
+        else:
+            combined_flat = projected_grads.mean(dim=0)
+
+        # Reshape
         combined_grads = []
         start = 0
         for g in objective_grads[0]:
@@ -148,6 +158,7 @@ class PPO:
             start += numel
 
         return combined_grads
+
 
     def update_multihead(self):
         mean_value_loss = 0
