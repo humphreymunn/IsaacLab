@@ -27,6 +27,10 @@ parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument("--use_critic_multi", action="store_true", default=False)
+parser.add_argument("--use_pcgrad", action="store_true", default=False, help="Use PCGrad for multi-head training.")
+parser.add_argument("--use_gradnorm", action="store_true", default=False, help="Use GradNorm for multi-head training.")
+parser.add_argument("--use_normpres", action="store_true", default=False, help="Use Norm preservation for multi-head training.")
+
 parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
@@ -138,7 +142,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if agent_cfg.run_name:
         log_dir += f"_{agent_cfg.run_name}"
     log_dir = os.path.join(log_root_path, log_dir)
-    log_dir += f"_{args_cli.use_critic_multi}"
+    log_dir += f"_multi" if args_cli.use_critic_multi else ""
+    log_dir += f"_pcgrad" if args_cli.use_pcgrad else ""
+    log_dir += f"_gradnorm" if args_cli.use_gradnorm else ""
+    log_dir += f"_normpres" if args_cli.use_normpres else ""
     log_dir += f"_{args_cli.seed}" if args_cli.seed is not None else ""
 
     # create isaac environment
@@ -168,7 +175,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
     # create runner from rsl-rl
-    runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device, multihead=args_cli.use_critic_multi)
+    runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device, multihead=args_cli.use_critic_multi, pcgrad=args_cli.use_pcgrad, gradnorm=args_cli.use_gradnorm, normpres=args_cli.use_normpres)
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
     # load the checkpoint

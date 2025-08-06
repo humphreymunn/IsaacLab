@@ -22,7 +22,7 @@ class OnPolicyRunner:
     """On-policy runner for training and evaluation."""
 
     def __init__(self, env: VecEnv, train_cfg, log_dir=None, device="cpu", \
-                 rnn_num_layers=None, rnn_hidden_size=None, concatenate_rnn_with_input=None, untrained=None, multihead=False):
+                 rnn_num_layers=None, rnn_hidden_size=None, concatenate_rnn_with_input=None, untrained=None, multihead=False, pcgrad=False, gradnorm=False, normpres=False):
         self.cfg = train_cfg
         self.alg_cfg = train_cfg["algorithm"]
         self.policy_cfg = train_cfg["policy"]
@@ -56,7 +56,7 @@ class OnPolicyRunner:
             num_obs, num_critic_obs, self.env.num_actions, self.reward_components, **self.policy_cfg, **rnn_params
         ).to(self.device)
         alg_class = eval(self.alg_cfg.pop("class_name"))  # PPO
-        self.alg: PPO = alg_class(self.actor_critic, device=self.device, **self.alg_cfg)
+        self.alg: PPO = alg_class(self.actor_critic, device=self.device, **self.alg_cfg, gradnorm=gradnorm)
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
         self.empirical_normalization = self.cfg["empirical_normalization"]
@@ -83,6 +83,10 @@ class OnPolicyRunner:
         self.tot_time = 0
         self.current_learning_iteration = 0
         self.git_status_repos = [rsl_rl.__file__]
+
+        self.pcgrad = pcgrad
+        self.gradnorm = gradnorm
+        self.normpres = normpres
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):
         # initialize writer
@@ -290,10 +294,7 @@ class OnPolicyRunner:
                 self.alg.compute_returns_multi(critic_obs)
                 #self.env.env.update_curriculum(it)
 
-            if self.reward_components == 1:
-                update_logs = self.alg.update()
-            else:
-                update_logs = self.alg.update_multihead()
+            update_logs = self.alg.update_multihead(self.pcgrad, self.gradnorm, self.normpres)
 
             stop = time.time()
             learn_time = stop - start
@@ -369,16 +370,17 @@ class OnPolicyRunner:
             for i, val in enumerate(locs["per_head_advantages"]):
                 self.writer.add_scalar(f"Advantage/Head_{reward_names[i]}", val.item(), locs["it"])
 
-            # Gradient norm per head
-            for i, val in enumerate(locs["grad_norms"]):
-                self.writer.add_scalar(f"Grad/Norm/Head_{reward_names[i]}", val.item(), locs["it"])
+            if self.pcgrad:
+                # Gradient norm per head
+                for i, val in enumerate(locs["grad_norms"]):
+                    self.writer.add_scalar(f"Grad/Norm/Head_{reward_names[i]}", val.item(), locs["it"])
 
-            # Gradient angles between head pairs
-            for idx, angle in enumerate(locs["grad_angles"]):
-                self.writer.add_scalar(f"Grad/Angle/Pair_{idx}", angle, locs["it"])
+                # Gradient angles between head pairs
+                for idx, angle in enumerate(locs["grad_angles"]):
+                    self.writer.add_scalar(f"Grad/Angle/Pair_{idx}", angle, locs["it"])
 
-            # Projection magnitude (averaged across all grads)
-            self.writer.add_scalar("Grad/ProjectionMagnitude", locs["grad_projection_magnitude"], locs["it"])
+                # Projection magnitude (averaged across all grads)
+                self.writer.add_scalar("Grad/ProjectionMagnitude", locs["grad_projection_magnitude"], locs["it"])
 
         self.writer.add_scalar("Policy/entropy", locs["mean_entropy"], locs["it"])
         self.writer.add_scalar("Policy/kl_divergence", locs["mean_approx_kl"], locs["it"])
