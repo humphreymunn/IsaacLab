@@ -6,7 +6,6 @@ import seaborn as sns
 # === Config ===
 INPUT_CSV = "eval_results.csv"
 OUTPUT_DIR = "plots"
-OUTPUT_PLOT = "multihead_comparison_all_tasks.png"
 
 # === Load CSV ===
 if not os.path.exists(INPUT_CSV):
@@ -17,9 +16,12 @@ df = pd.read_csv(INPUT_CSV)
 # === Create output directory ===
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# === Map multihead values to new labels ===
+df["method"] = df["multihead"].map({True: "PCGrad", False: "Baseline"})
+
 # === Compute stats: mean, std, count ===
 grouped = (
-    df.groupby(["task", "multihead"])["reward"]
+    df.groupby(["task", "method"])["reward"]
     .agg(["mean", "std", "count"])
     .reset_index()
     .rename(columns={"mean": "reward_mean", "std": "reward_std", "count": "num_runs"})
@@ -28,28 +30,27 @@ grouped = (
 # Drop rows with NaN mean (just in case)
 grouped = grouped.dropna(subset=["reward_mean"])
 
-# === Plot ===
-plt.figure(figsize=(12, 6))
-ax = sns.barplot(
-    data=grouped,
-    x="task",
-    y="reward_mean",
-    hue="multihead",
-    errorbar=None,  # For seaborn >= 0.12
-    palette="Set2"
-)
+# === Generate separate plots per task ===
+for task in grouped["task"].unique():
+    task_data = grouped[grouped["task"] == task]
 
-# === Add std dev bars and reward labels ===
-bar_index = 0
-for container in ax.containers:
-    for bar in container.get_children():  # Safely access bar patches
-        if not hasattr(bar, "get_height"):
-            continue  # Skip non-bar elements (e.g., tuples)
+    plt.figure(figsize=(6, 5))
+    ax = sns.barplot(
+        data=task_data,
+        x="method",
+        y="reward_mean",
+        hue="method",
+        errorbar=None,  # For seaborn >= 0.12
+        palette="Set2"
+    )
 
+    # Add std dev bars and reward labels
+    for i, bar in enumerate(ax.patches):
+        if i >= len(task_data):
+            continue  # Skip bars with no matching data
+        row = task_data.iloc[i]
         height = bar.get_height()
         x = bar.get_x() + bar.get_width() / 2
-
-        # Add average label near bottom
         ax.text(
             x,
             0.02 * ax.get_ylim()[1],
@@ -59,32 +60,27 @@ for container in ax.containers:
             fontsize=9,
             color="black"
         )
+        row = task_data.iloc[i]
+        if row["num_runs"] > 1 and pd.notnull(row["reward_std"]):
+            ax.errorbar(
+                x=x,
+                y=height,
+                yerr=row["reward_std"],
+                fmt='none',
+                ecolor='black',
+                capsize=4,
+                linewidth=1.5
+            )
 
-        # Add error bar if std is valid and multiple runs
-        if bar_index < len(grouped):
-            row = grouped.iloc[bar_index]
-            if row["num_runs"] > 1 and pd.notnull(row["reward_std"]):
-                ax.errorbar(
-                    x=x,
-                    y=height,
-                    yerr=row["reward_std"],
-                    fmt='none',
-                    ecolor='black',
-                    capsize=4,
-                    linewidth=1.5
-                )
-        bar_index += 1
+    plt.title(f"Baseline vs PCGrad Performance: {task}")
+    plt.xlabel("Method")
+    plt.ylabel("Average Reward")
+    plt.legend(title="Method", loc="upper left")
+    plt.tight_layout()
 
-# === Final formatting ===
-plt.title("Multihead vs Non-Multihead Performance per Task")
-plt.xlabel("Task")
-plt.ylabel("Average Reward")
-plt.xticks(rotation=45)
-plt.legend(title="Multihead")
-plt.tight_layout()
-
-# Save and show
-save_path = os.path.join(OUTPUT_DIR, OUTPUT_PLOT)
-plt.savefig(save_path)
-print(f"[Saved] {save_path}")
-plt.show()
+    # Save each plot with safe filename
+    plot_filename = f"{task.replace('/', '_')}_comparison.png"
+    save_path = os.path.join(OUTPUT_DIR, plot_filename)
+    plt.savefig(save_path)
+    print(f"[Saved] {save_path}")
+    plt.close()

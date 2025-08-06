@@ -20,9 +20,10 @@ folder_to_task = {
 
 # === Root log directory ===
 log_root = "logs/rsl_rl"
-task_dirs = [d for d in os.listdir(log_root) if os.path.isdir(os.path.join(log_root, d))]
+output_csv = "eval_results.csv"
+write_header = not os.path.exists(output_csv)
 
-results = []
+task_dirs = [d for d in os.listdir(log_root) if os.path.isdir(os.path.join(log_root, d))]
 
 for folder_name in task_dirs:
     if folder_name not in folder_to_task:
@@ -51,7 +52,7 @@ for folder_name in task_dirs:
             "./isaaclab.sh",
             "-p", "scripts/reinforcement_learning/rsl_rl/play.py",
             f"--task={task_name}",
-            "--num_envs", "4092",
+            "--num_envs", "1024",
             "--headless",
             "--load_run", run_name,
         ]
@@ -80,15 +81,21 @@ for folder_name in task_dirs:
         if reward is None:
             print(f"[WARNING] Reward not found for run: {run_name}")
 
-        results.append({
+        result_row = {
             "task": task_name,
             "run_name": run_name,
             "seed": int(seed),
             "multihead": multihead,
             "reward": reward
-        })
+        }
 
-# Save to CSV
-df = pd.DataFrame(results)
-df.to_csv("eval_results.csv", index=False)
-print("✅ Saved results to eval_results.csv")
+        # Append to CSV immediately
+        pd.DataFrame([result_row]).to_csv(
+            output_csv,
+            mode="a",
+            header=write_header,
+            index=False
+        )
+        write_header = False  # Only write header once
+
+print("✅ All available results have been written to eval_results.csv.")
