@@ -38,7 +38,7 @@ def split_and_pad_trajectories(tensor, dones):
     # Extract the individual trajectories
     trajectories = torch.split(tensor.transpose(1, 0).flatten(0, 1), trajectory_lengths_list)
     # add at least one full length trajectory
-    trajectories = trajectories + (torch.zeros(tensor.shape[0], tensor.shape[-1], device=tensor.device),)
+    trajectories = trajectories + (torch.zeros(tensor.shape[0], *tensor.shape[2:], device=tensor.device),)
     # pad the trajectories to the length of the longest trajectory
     padded_trajectories = torch.nn.utils.rnn.pad_sequence(trajectories)
     # remove the added tensor
@@ -65,25 +65,52 @@ def store_code_state(logdir, repositories) -> list:
     for repository_file_path in repositories:
         try:
             repo = git.Repo(repository_file_path, search_parent_directories=True)
+            t = repo.head.commit.tree
         except Exception:
             print(f"Could not find git repository in {repository_file_path}. Skipping.")
             # skip if not a git repository
             continue
         # get the name of the repository
         repo_name = pathlib.Path(repo.working_dir).name
-        t = repo.head.commit.tree
         diff_file_name = os.path.join(git_log_dir, f"{repo_name}.diff")
         # check if the diff file already exists
         if os.path.isfile(diff_file_name):
             continue
         # write the diff file
         print(f"Storing git diff for '{repo_name}' in: {diff_file_name}")
-        try:
-            with open(diff_file_name, "x", encoding='utf8') as f:
-                content = f"--- git status ---\n{repo.git.status()} \n\n\n--- git diff ---\n{repo.git.diff(t)}"
-                f.write(content)
-            # add the file path to the list of files to be uploaded
-            file_paths.append(diff_file_name)
-        except Exception:
-            pass
+        with open(diff_file_name, "x", encoding="utf-8") as f:
+            content = f"--- git status ---\n{repo.git.status()} \n\n\n--- git diff ---\n{repo.git.diff(t)}"
+            f.write(content)
+        # add the file path to the list of files to be uploaded
+        file_paths.append(diff_file_name)
     return file_paths
+
+
+def string_to_callable(name: str) -> Callable:
+    """Resolves the module and function names to return the function.
+
+    Args:
+        name (str): The function name. The format should be 'module:attribute_name'.
+
+    Raises:
+        ValueError: When the resolved attribute is not a function.
+        ValueError: When unable to resolve the attribute.
+
+    Returns:
+        Callable: The function loaded from the module.
+    """
+    try:
+        mod_name, attr_name = name.split(":")
+        mod = importlib.import_module(mod_name)
+        callable_object = getattr(mod, attr_name)
+        # check if attribute is callable
+        if callable(callable_object):
+            return callable_object
+        else:
+            raise ValueError(f"The imported object is not callable: '{name}'")
+    except AttributeError as e:
+        msg = (
+            "We could not interpret the entry as a callable object. The format of input should be"
+            f" 'module:attribute_name'\nWhile processing input '{name}', received the error:\n {e}."
+        )
+        raise ValueError(msg)

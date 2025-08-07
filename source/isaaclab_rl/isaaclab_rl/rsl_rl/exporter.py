@@ -133,7 +133,9 @@ class _OnnxPolicyExporter(torch.nn.Module):
         x_in = self.normalizer(x_in)
         x, (h, c) = self.rnn(x_in.unsqueeze(0), (h_in, c_in))
         x = x.squeeze(0)
-        return self.actor(x), h, c
+        combined_input_a = torch.cat((x_in, x), dim=-1)
+        
+        return self.actor(combined_input_a), h, c
 
     def forward(self, x):
         return self.actor(self.normalizer(x))

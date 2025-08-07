@@ -367,8 +367,11 @@ class OnPolicyRunner:
                 self.writer.add_scalar(f"Loss/SurrogateLoss/Component_{reward_names[i]}", loss.item(), locs["it"])
 
             # Per-head advantages
-            for i, val in enumerate(locs["per_head_advantages"]):
-                self.writer.add_scalar(f"Advantage/Head_{reward_names[i]}", val.item(), locs["it"])
+            try:
+                for i, val in enumerate(locs["per_head_advantages"]):
+                    self.writer.add_scalar(f"Advantage/Head_{reward_names[i]}", val.item(), locs["it"])
+            except RuntimeError:
+                pass # may be using lstm
 
             if self.pcgrad:
                 # Gradient norm per head
@@ -387,9 +390,12 @@ class OnPolicyRunner:
         self.writer.add_scalar("Policy/clip_fraction", locs["mean_clip_fraction"], locs["it"])
         
         # Action magnitudes per action dim
-        for i, val in enumerate(locs["action_magnitudes"]):
-            self.writer.add_scalar(f"Action/Magnitude/Action_{i}", val.item(), locs["it"])
-            
+        try: 
+            for i, val in enumerate(locs["action_magnitudes"]):
+                self.writer.add_scalar(f"Action/Magnitude/Action_{i}", val.item(), locs["it"])
+        except RuntimeError: # may be using lstm
+            pass
+
         #for i in range(len(locs['mean_component_value_loss'])):
         #    self.writer.add_scalar(f"Loss/component_value_function_{self.env.env._episode_sums.keys()[i]}", locs['mean_component_value_loss'][i], locs["it"])
         self.writer.add_scalar("Loss/learning_rate", self.alg.learning_rate, locs["it"])

@@ -10,9 +10,9 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 
 @configclass
 class FactoryPPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    num_steps_per_env = 96  # matches horizon_length
-    max_iterations = 400  # matches max_epochs
-    save_interval = 50  # matches save_frequency
+    num_steps_per_env = 2  # matches horizon_length
+    max_iterations = 200  # matches max_epochs
+    save_interval = 5  # matches save_frequency
     experiment_name = "factory"  # from full_experiment_name
     empirical_normalization = False  # using normalize_input/value manually below
 
@@ -27,16 +27,16 @@ class FactoryPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     )
 
     algorithm = RslRlPpoAlgorithmCfg(
-        value_loss_coef=1.0,  # from critic_coef
+        value_loss_coef=2.0,  # from critic_coef
         use_clipped_value_loss=True,  # from clip_value
         clip_param=0.2,  # from e_clip
-        entropy_coef=1e-3,  # from entropy_coef
+        entropy_coef=0.0,  # from entropy_coef
         num_learning_epochs=5,  # from mini_epochs
         num_mini_batches=4,
-        learning_rate=5.0e-4,
+        learning_rate=1.0e-4,
         schedule="adaptive",  # from lr_schedule
         gamma=0.99,
         lam=0.95,  # tau
-        desired_kl=0.02,
+        desired_kl=0.008,
         max_grad_norm=1.0,
     )

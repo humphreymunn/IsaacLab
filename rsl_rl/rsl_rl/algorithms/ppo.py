@@ -279,7 +279,12 @@ class PPO:
                 surrogate_per_component, surrogate_per_component_clipped
             )  # [B, C]
 
-            mean_component_surrogate_loss = component_surrogate_losses.mean(dim=0)  # [C]
+            # handles lstm case 
+            x = component_surrogate_losses
+            x = x if x.dim() == 3 else x.unsqueeze(0)  # [1, B, C] → [T, C, B] fake-T=1
+            x = x.permute(1, 0, 2).reshape(x.shape[1], -1)  # [C, T*B]
+            mean_component_surrogate_loss = x.mean(dim=1)  # [C]
+
             surrogate_loss = mean_component_surrogate_loss.sum()
 
             # Value function loss
@@ -291,8 +296,11 @@ class PPO:
                 value_losses_clipped = (value_clipped - returns_batch).pow(2)
                 dim_use = 2 if len(value_losses.shape) > 2 else 1
                 value_loss = torch.max(value_losses.sum(dim=dim_use), value_losses_clipped.sum(dim=dim_use)).mean()
-                component_value_loss = torch.max(value_losses, value_losses_clipped).mean(dim=0)  # shape: [C]
-                mean_component_value_loss += component_value_loss.detach()
+                component_value_loss = torch.max(value_losses, value_losses_clipped).mean(dim=dim_use-1)  # shape: [C]
+                if dim_use == 2:
+                    mean_component_value_loss += component_value_loss.sum(dim=0).detach()
+                else:
+                    mean_component_value_loss += component_value_loss.detach()
             else:
                 assert False # not implemented
                 value_loss = (returns_batch - value_batch).pow(2).sum(dim=2).mean()
