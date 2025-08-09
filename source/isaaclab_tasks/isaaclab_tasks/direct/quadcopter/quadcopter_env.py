@@ -128,6 +128,8 @@ class QuadcopterEnv(DirectRLEnv):
 
         # add handle for debug visualization (this is set to a valid handle inside set_debug_vis)
         self.set_debug_vis(self.cfg.debug_vis)
+        self.reward_components = 3
+        self.reward_component_names = ["lin_vel", "ang_vel", "distance_to_goal"]
 
     def _setup_scene(self):
         self._robot = Articulation(self.cfg.robot)
@@ -179,11 +181,11 @@ class QuadcopterEnv(DirectRLEnv):
             "ang_vel": ang_vel * self.cfg.ang_vel_reward_scale * self.step_dt,
             "distance_to_goal": distance_to_goal_mapped * self.cfg.distance_to_goal_reward_scale * self.step_dt,
         }
-        reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
+        reward = torch.stack(list(rewards.values()))
         # Logging
         for key, value in rewards.items():
             self._episode_sums[key] += value
-        return reward
+        return reward.T
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1

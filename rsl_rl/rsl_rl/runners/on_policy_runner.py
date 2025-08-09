@@ -174,9 +174,12 @@ class OnPolicyRunner:
                 start = stop
                 #pi_curr = min(0.25, pi_curr + 0.0025) 
                 self.alg.compute_returns(critic_obs)
-                #self.env.env.update_curriculum(it)
+                try:
 
-       
+                    self.env.unwrapped.update_curriculum(it)
+                except Exception as e:
+                    print(f"No curriculum present.")
+
             update_logs = self.alg.update()
 
             stop = time.time()
@@ -292,7 +295,11 @@ class OnPolicyRunner:
                 start = stop
                 #pi_curr = min(0.25, pi_curr + 0.0025)
                 self.alg.compute_returns_multi(critic_obs)
-                #self.env.env.update_curriculum(it)
+                try:
+                    
+                    self.env.unwrapped.update_curriculum(it)
+                except Exception as e:
+                    print(f"No curriculum present.")
 
             update_logs = self.alg.update_multihead(self.pcgrad, self.gradnorm, self.normpres)
 
@@ -362,18 +369,18 @@ class OnPolicyRunner:
             for i, loss in enumerate(locs["mean_component_value_loss"]):
                 self.writer.add_scalar(f"Loss/ValueLoss/Component_{reward_names[i]}", loss.item(), locs["it"])
 
-            # Per-head surrogate losses
-            for i, loss in enumerate(locs["mean_component_surrogate_loss"]):
-                self.writer.add_scalar(f"Loss/SurrogateLoss/Component_{reward_names[i]}", loss.item(), locs["it"])
-
-            # Per-head advantages
-            try:
-                for i, val in enumerate(locs["per_head_advantages"]):
-                    self.writer.add_scalar(f"Advantage/Head_{reward_names[i]}", val.item(), locs["it"])
-            except RuntimeError:
-                pass # may be using lstm
-
             if self.pcgrad:
+                # Per-head surrogate losses
+                for i, loss in enumerate(locs["mean_component_surrogate_loss"]):
+                    self.writer.add_scalar(f"Loss/SurrogateLoss/Component_{reward_names[i]}", loss.item(), locs["it"])
+
+                # Per-head advantages
+                try:
+                    for i, val in enumerate(locs["per_head_advantages"]):
+                        self.writer.add_scalar(f"Advantage/Head_{reward_names[i]}", val.item(), locs["it"])
+                except RuntimeError:
+                    pass # may be using lstm
+
                 # Gradient norm per head
                 for i, val in enumerate(locs["grad_norms"]):
                     self.writer.add_scalar(f"Grad/Norm/Head_{reward_names[i]}", val.item(), locs["it"])

@@ -279,11 +279,12 @@ class PPO:
                 surrogate_per_component, surrogate_per_component_clipped
             )  # [B, C]
 
+            mean_component_surrogate_loss = component_surrogate_losses.mean(dim=0)  # [C]
             # handles lstm case 
-            x = component_surrogate_losses
-            x = x if x.dim() == 3 else x.unsqueeze(0)  # [1, B, C] → [T, C, B] fake-T=1
-            x = x.permute(1, 0, 2).reshape(x.shape[1], -1)  # [C, T*B]
-            mean_component_surrogate_loss = x.mean(dim=1)  # [C]
+            #x = component_surrogate_losses
+            #x = x if x.dim() == 3 else x.unsqueeze(0)  # [1, B, C] → [T, C, B] fake-T=1
+            #x = x.permute(1, 0, 2).reshape(x.shape[1], -1)  # [C, T*B]
+            #mean_component_surrogate_loss = x.mean(dim=1)  # [C]
 
             surrogate_loss = mean_component_surrogate_loss.sum()
 

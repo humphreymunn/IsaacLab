@@ -44,6 +44,26 @@ class LocomotionEnv(DirectRLEnv):
         self.inv_start_rot = quat_conjugate(self.start_rotation).repeat((self.num_envs, 1))
         self.basis_vec0 = self.heading_vec.clone()
         self.basis_vec1 = self.up_vec.clone()
+        self.reward_components = 16
+        self.reward_component_names = [
+            "up_proj",
+            "heading_proj",
+            "vel_loc_x",
+            "vel_loc_y",
+            "angvel_loc_x",
+            "angvel_loc_y",
+            "roll",
+            "pitch",
+            "yaw",
+            "angle_to_target",
+            "dof_pos_scaled",
+            "dof_vel_x",
+            "dof_vel_y",
+            "dof_vel_z",
+            "actions_x",
+            "actions_y",
+            "actions_z",
+        ]
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot)

@@ -59,7 +59,19 @@ class UnitreeGo2RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
 
         # terminations
         self.terminations.base_contact.params["sensor_cfg"].body_names = "base"
-
+        self.reward_components = 10
+        self.reward_component_names = [
+            "track_lin_vel_xy_exp",
+            "track_ang_vel_z_exp",
+            "lin_vel_z_l2",
+            "ang_vel_xy_l2",
+            "dof_torques_l2",
+            "dof_acc_l2",
+            "action_rate_l2",
+            "feet_air_time",
+            "flat_orientation_l2",
+            "dof_pos_limits"
+        ]
 
 @configclass
 class UnitreeGo2RoughEnvCfg_PLAY(UnitreeGo2RoughEnvCfg):

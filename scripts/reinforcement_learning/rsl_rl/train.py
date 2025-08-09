@@ -124,6 +124,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             agent_cfg.algorithm.entropy_coef = 0.0005
         elif "Cube-Shadow" in args_cli.task:
             agent_cfg.algorithm.entropy_coef = 0.00005
+        elif "Rough-Unitree-Go2" in args_cli.task:
+            agent_cfg.algorithm.entropy_coef = 0.0025
 
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here
