@@ -118,6 +118,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if args_cli.use_pcgrad:
         if "Rough-G1" in args_cli.task:
             agent_cfg.algorithm.entropy_coef = 0.00025
+        elif "Rough-H1" in args_cli.task:
+            agent_cfg.algorithm.entropy_coef = 0.00025
         elif "LocoManip-Digit" in args_cli.task:
             agent_cfg.algorithm.entropy_coef = 0.0025
         elif "Cube-Allegro" in args_cli.task:
@@ -126,7 +128,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             agent_cfg.algorithm.entropy_coef = 0.00005
         elif "Rough-Unitree-Go2" in args_cli.task:
             agent_cfg.algorithm.entropy_coef = 0.0025
-
+        
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here
     env_cfg.seed = agent_cfg.seed

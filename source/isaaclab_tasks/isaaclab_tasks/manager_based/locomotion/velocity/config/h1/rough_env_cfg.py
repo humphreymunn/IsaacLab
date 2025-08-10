@@ -111,7 +111,19 @@ class H1RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
 
         # Terminations
         self.terminations.base_contact.params["sensor_cfg"].body_names = ".*torso_link"
-
+        
+        # get number of rewards in the cfg
+        self.reward_components = sum(
+            isinstance(getattr(self.rewards, attr), RewTerm)
+            for attr in dir(self.rewards)
+            if not attr.startswith("__")  # skip dunder attributes
+        )
+        # set the names of the reward components
+        self.reward_component_names = [
+            attr for attr in dir(self.rewards)
+            if isinstance(getattr(self.rewards, attr), RewTerm) and not attr.startswith("__")
+        ]
+        
 
 @configclass
 class H1RoughEnvCfg_PLAY(H1RoughEnvCfg):
