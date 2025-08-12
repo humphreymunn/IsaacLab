@@ -30,6 +30,7 @@ parser.add_argument("--use_critic_multi", action="store_true", default=False)
 parser.add_argument("--use_pcgrad", action="store_true", default=False, help="Use PCGrad for multi-head training.")
 parser.add_argument("--use_gradnorm", action="store_true", default=False, help="Use GradNorm for multi-head training.")
 parser.add_argument("--use_normpres", action="store_true", default=False, help="Use Norm preservation for multi-head training.")
+parser.add_argument("--entropy_coef", type=float, default=None, help="Entropy coefficient for the PPO algorithm.")
 
 parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
@@ -115,7 +116,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
     )
-    if args_cli.use_pcgrad:
+    '''if args_cli.use_pcgrad:
         if "Rough-G1" in args_cli.task:
             agent_cfg.algorithm.entropy_coef = 0.00025
         elif "Rough-H1" in args_cli.task:
@@ -127,8 +128,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         elif "Cube-Shadow" in args_cli.task:
             agent_cfg.algorithm.entropy_coef = 0.00005
         elif "Rough-Unitree-Go2" in args_cli.task:
-            agent_cfg.algorithm.entropy_coef = 0.0025
-        
+            agent_cfg.algorithm.entropy_coef = 0.0025'''
+    if args_cli.entropy_coef is not None:
+        agent_cfg.algorithm.entropy_coef = args_cli.entropy_coef
+
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here
     env_cfg.seed = agent_cfg.seed
@@ -159,6 +162,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     log_dir += f"_pcgrad" if args_cli.use_pcgrad else ""
     log_dir += f"_gradnorm" if args_cli.use_gradnorm else ""
     log_dir += f"_normpres" if args_cli.use_normpres else ""
+    log_dir += f"_{args_cli.entropy_coef}" if args_cli.entropy_coef is not None else ""
     log_dir += f"_{args_cli.seed}" if args_cli.seed is not None else ""
 
     # create isaac environment
