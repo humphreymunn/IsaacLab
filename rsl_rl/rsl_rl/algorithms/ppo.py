@@ -180,17 +180,15 @@ class PPO:
 
         elif normpres:
             # === Norm Preservation without GradNorm ===
-            avg_orig_grad = flat_grads.mean(dim=0)
-            target_norm = avg_orig_grad.norm()
-            current_norm = projected_grads.norm(dim=1).mean()
-            if current_norm > 1e-6:
-                combined_flat = projected_grads.mean(dim=0) * (target_norm / current_norm)
-            else:
-                combined_flat = projected_grads.mean(dim=0)
+            g_sum_orig = flat_grads.sum(dim=0)
+            g_sum_proj = projected_grads.sum(dim=0)
+            denom = g_sum_proj.norm() + 1e-8
+            scale = g_sum_orig.norm() / denom
+            combined_flat = g_sum_proj * scale
 
         else:
             # === Plain average (no GradNorm, no normpres) ===
-            combined_flat = projected_grads.mean(dim=0)
+            combined_flat = projected_grads.sum(dim=0)
 
         # === Unflatten back to original shape ===
         combined_grads = []
