@@ -31,6 +31,7 @@ parser.add_argument("--use_pcgrad", action="store_true", default=False, help="Us
 parser.add_argument("--use_gradnorm", action="store_true", default=False, help="Use GradNorm for multi-head training.")
 parser.add_argument("--use_normpres", action="store_true", default=False, help="Use Norm preservation for multi-head training.")
 parser.add_argument("--entropy_coef", type=float, default=None, help="Entropy coefficient for the PPO algorithm.")
+parser.add_argument("--architecture", type=str, default=None, help="Architecture of the RL agent. Specified as '56,56' etc. for actor and critic.")
 
 parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
@@ -132,6 +133,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if args_cli.entropy_coef is not None:
         agent_cfg.algorithm.entropy_coef = args_cli.entropy_coef
 
+    if args_cli.architecture is not None:
+        agent_cfg.policy.actor_hidden_dims = [int(x) for x in args_cli.architecture.split(",")]
+        agent_cfg.policy.critic_hidden_dims = [int(x) for x in args_cli.architecture.split(",")]
+    
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here
     env_cfg.seed = agent_cfg.seed
@@ -163,6 +168,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     log_dir += f"_gradnorm" if args_cli.use_gradnorm else ""
     log_dir += f"_normpres" if args_cli.use_normpres else ""
     log_dir += f"_{args_cli.entropy_coef}" if args_cli.entropy_coef is not None else ""
+    log_dir += f"_{args_cli.architecture}" if args_cli.architecture is not None else ""
     log_dir += f"_{args_cli.seed}" if args_cli.seed is not None else ""
 
     # create isaac environment
