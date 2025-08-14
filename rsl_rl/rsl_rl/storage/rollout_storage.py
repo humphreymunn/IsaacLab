@@ -133,11 +133,32 @@ class RolloutStorage:
             advantage = delta + next_is_not_terminal * gamma * lam * advantage
             self.returns[step] = advantage + self.values[step]
 
-        # Compute and normalize the advantages
-        self.component_advantages = self.returns - self.values  # shape: [T, E, C]
-        # Normalize all components as a whole
-        flat_component_advantages = self.component_advantages.view(-1)
-        self.component_advantages = (self.component_advantages - flat_component_advantages.mean()) / (flat_component_advantages.std() + 1e-8)
+        # Per-component advantages: [T, E, C]
+        A = self.returns - self.values
+
+        # ---- Center, preserve scale ratios ----
+        # Option 1 (recommended): per-component centering (keeps each component mean ~0)
+        mu = A.mean(dim=(0, 1), keepdim=True)                 # [1,1,C]
+        X = A - mu                                            # centered components
+
+        # Flatten batch to compute covariance
+        XE = X.view(-1, X.shape[-1])                          # [B, C], B=T*E
+        B = max(1, XE.shape[0] - 1)
+        # Unbiased covariance (keeps original scales/ratios)
+        C = (XE.T @ XE) / B                                   # [C, C]
+
+        # Scalar kappa so Var(sum_c X_c) = 1
+        ones = torch.ones(self.reward_components, 1, device=self.device)
+        var_sum = (ones.T @ C @ ones).squeeze()               # scalar
+        kappa = (1.0 / torch.sqrt(var_sum + 1e-8)).clamp(0.25, 4.0)  # clip optional for stability
+
+        # Final per-component advantages for PCGrad (ratios preserved)
+        self.component_advantages = X * kappa                 # [T, E, C]
+
+        # (Optional: diagnostics)
+        self.kappa_last = kappa
+        self.cov_last = C
+
         self.advantages = self.component_advantages.sum(dim=2)  # for legacy compatibility
         self.advantages = (self.advantages - self.advantages.mean()) / (self.advantages.std() + 1e-8)
 
