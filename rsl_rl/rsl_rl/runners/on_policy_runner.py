@@ -22,7 +22,7 @@ class OnPolicyRunner:
     """On-policy runner for training and evaluation."""
 
     def __init__(self, env: VecEnv, train_cfg, log_dir=None, device="cpu", \
-                 rnn_num_layers=None, rnn_hidden_size=None, concatenate_rnn_with_input=None, untrained=None, multihead=False, pcgrad=False, gradnorm=False, normpres=False):
+                 rnn_num_layers=None, rnn_hidden_size=None, concatenate_rnn_with_input=None, untrained=None, multihead=False, pcgrad=False, gradnorm=False, normpres=False, gradvac=False):
         self.cfg = train_cfg
         self.alg_cfg = train_cfg["algorithm"]
         self.policy_cfg = train_cfg["policy"]
@@ -87,6 +87,7 @@ class OnPolicyRunner:
         self.pcgrad = pcgrad
         self.gradnorm = gradnorm
         self.normpres = normpres
+        self.gradvac = gradvac
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):
         # initialize writer
@@ -301,7 +302,7 @@ class OnPolicyRunner:
                 except Exception as e:
                     print(f"No curriculum present.")
 
-            update_logs = self.alg.update_multihead(self.pcgrad, self.gradnorm, self.normpres)
+            update_logs = self.alg.update_multihead(self.pcgrad, self.gradnorm, self.normpres, self.gradvac)
 
             stop = time.time()
             learn_time = stop - start
@@ -369,7 +370,7 @@ class OnPolicyRunner:
             for i, loss in enumerate(locs["mean_component_value_loss"]):
                 self.writer.add_scalar(f"Loss/ValueLoss/Component_{reward_names[i]}", loss.item(), locs["it"])
 
-            if self.pcgrad:
+            if self.pcgrad or self.gradvac:
                 # Per-head surrogate losses
                 for i, loss in enumerate(locs["mean_component_surrogate_loss"]):
                     self.writer.add_scalar(f"Loss/SurrogateLoss/Component_{reward_names[i]}", loss.item(), locs["it"])

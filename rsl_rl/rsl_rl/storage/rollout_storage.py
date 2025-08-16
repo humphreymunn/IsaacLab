@@ -150,7 +150,7 @@ class RolloutStorage:
         # Scalar kappa so Var(sum_c X_c) = 1
         ones = torch.ones(self.reward_components, 1, device=self.device)
         var_sum = (ones.T @ C @ ones).squeeze()               # scalar
-        kappa = (1.0 / torch.sqrt(var_sum + 1e-8)).clamp(0.25, 4.0)  # clip optional for stability
+        kappa = (1.0 / torch.sqrt(var_sum + 1e-8))#.clamp(0.25, 4.0)  # clip optional for stability
 
         # Final per-component advantages for PCGrad (ratios preserved)
         self.component_advantages = X * kappa                 # [T, E, C]

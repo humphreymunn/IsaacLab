@@ -12,6 +12,7 @@ from rsl_rl.storage import RolloutStorage
 
 import copy
 import random
+import math
 
 class PPO:
     actor_critic: ActorCritic
@@ -72,6 +73,12 @@ class PPO:
         self.gradnorm_alpha = 1.5  # usually between 1.0 and 2.0
         # self.loss_weights = torch.nn.Parameter(torch.ones(self.actor_critic.num_reward_components, device=self.device), requires_grad=True)
         self.initial_losses = None  # to be set after first iteration
+        self.gradvac_beta = 1e-2           # EMA step (≈ 100-step window recommended)
+        self.gradvac_phi = None            # will hold [C, C] EMA target matrix
+
+        self.cagrad_c = 0.5          # trade-off knob (0 <= c < 1). 0.4–0.6 typical
+        self.cagrad_steps = 25       # simplex PGD steps for the dual
+        self.cagrad_lr = 0.1         # step size for the dual
 
     def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, reward_components):
         self.storage = RolloutStorage(
@@ -122,43 +129,225 @@ class PPO:
         last_values = self.actor_critic.evaluate(last_critic_obs).detach()
         self.storage.compute_returns_multi(last_values, self.gamma, self.lam)
 
-    def apply_pcgrad(self, objective_grads, normpres=False, gradnorm=False):
-        num_objectives = len(objective_grads)
+    def _unflatten_to_param_shapes(self, flat_vec, like_grads):
+        # like_grads: List[Tensor] from one objective to get shapes
+        out, start = [], 0
+        for g in like_grads:
+            n = g.numel()
+            out.append(flat_vec[start:start+n].view_as(g))
+            start += n
+        return out
 
-        # Flatten gradients
+    def _flatten_grads(self, grads_per_obj):
+        # grads_per_obj: List[List[Tensor]]  -> [m, D]
+        return torch.stack([torch.cat([g.view(-1) for g in grads]) for grads in grads_per_obj])
+
+    def _adam_rms_flat(self, eps=1e-8):
+        """
+        Returns a flat vector r of per-parameter RMS = sqrt(v) + eps
+        aligned with self.actor_critic.parameters() order.
+        Falls back to ones if state not initialized yet.
+        """
+        parts = []
+        for p in self.actor_critic.parameters():
+            if not p.requires_grad:
+                parts.append(torch.ones_like(p).flatten())
+                continue
+            st = self.optimizer.state.get(p, None)
+            if st is None or ('exp_avg_sq' not in st):
+                parts.append(torch.ones_like(p).flatten())
+            else:
+                v = st['exp_avg_sq']
+                parts.append((v.sqrt() + eps).flatten())
+        return torch.cat(parts)  # [D]
+
+    @torch.no_grad()
+    def apply_gradvac(self, objective_grads,
+                    delta=0.05,      # gating margin
+                    rho=0.3,         # softness toward EMA target
+                    a2_clip=0.7,     # cap on mixing coeff
+                    max_angle_deg=12 # cap on per-pair rotation
+                    ):
+        device = self.device
+        m = len(objective_grads)
+        if (self.gradvac_phi is None) or (self.gradvac_phi.shape[0] != m):
+            self.gradvac_phi = torch.zeros((m, m), device=device)
+
+        # Flatten grads [m, D]
+        G  = self._flatten_grads(objective_grads)    # original per-component grads
+        G0 = G.clone()                                # evolving left operand
+
+        # Adam metric whitening vector r (sqrt(v)+eps), flat [D]
+        r = self._adam_rms_flat(eps=1e-8)
+        # Precompute whitened views
+        G_tilde  = G  / r          # [m, D]
+        G0_tilde = G0 / r          # [m, D]
+
+        eps = 1e-12
+        norms_G_t = G_tilde.norm(dim=1).clamp_min(eps)  # ||g_j||_M (fixed, original g_j)
+
+        # For downscale-only guard (use Euclidean; we want to control actual param step)
+        g_sum_orig = G.sum(dim=0)
+        norm_sum_orig = g_sum_orig.norm().clamp_min(eps)
+
+        for i in range(m):
+            js = [j for j in range(m) if j != i]
+            random.shuffle(js)
+            for j in js:
+                gi_t = G0_tilde[i]           # whitened evolving gi
+                gj_t = G_tilde[j]            # whitened fixed gj
+                ni_t = gi_t.norm().clamp_min(eps)
+                nj_t = norms_G_t[j]
+
+                # current cosine in Adam metric
+                phi = (gi_t @ gj_t) / (ni_t * nj_t)
+                phi = phi.clamp(-0.999999, 0.999999)
+
+                # EMA target and softened target
+                phi_hat = self.gradvac_phi[i, j].clamp(-0.999999, 0.999999)
+                phi_tgt = phi + rho * (phi_hat - phi)
+
+                # gate: only act if clearly below both EMA and a small negative threshold
+                if (phi < phi_tgt) and (phi < -delta):
+                    # closed-form a2 to reach phi_tgt (derived in Euclidean, valid in whitened space)
+                    sqrt1_phi2  = torch.sqrt((1.0 - phi     * phi    ).clamp_min(1e-12))
+                    sqrt1_pt2   = torch.sqrt((1.0 - phi_tgt * phi_tgt).clamp_min(1e-12))
+                    a2 = (ni_t * (phi_tgt * sqrt1_phi2 - phi * sqrt1_pt2)) / (nj_t * sqrt1_pt2 + eps)
+
+                    # cap the mix
+                    a2 = a2.clamp(-a2_clip, a2_clip)
+
+                    # propose update in both spaces (note: a2 is invariant under diagonal whitening)
+                    gi_new      = G0[i]      + a2 * G[j]
+                    gi_new_t    = G0_tilde[i] + a2 * G_tilde[j]
+
+                    # cap max rotation (measured in Adam metric)
+                    cos_rot = (G0_tilde[i] @ gi_new_t) / (G0_tilde[i].norm().clamp_min(eps) * gi_new_t.norm().clamp_min(eps))
+                    cos_rot = cos_rot.clamp(-1.0, 1.0)
+                    angle_deg = torch.acos(cos_rot) * (180.0 / math.pi)
+                    if angle_deg > max_angle_deg:
+                        a2 = a2 * (max_angle_deg / (angle_deg + 1e-6))
+                        gi_new   = G0[i]       + a2 * G[j]
+                        gi_new_t = G0_tilde[i] + a2 * G_tilde[j]
+
+                    # commit
+                    G0[i]       = gi_new
+                    G0_tilde[i] = gi_new_t
+
+                # EMA update with observed current cosine (in Adam metric)
+                self.gradvac_phi[i, j] = (1.0 - self.gradvac_beta) * self.gradvac_phi[i, j] + self.gradvac_beta * phi
+
+        # combine (sum semantics)
+        combined_flat = G0.sum(dim=0)
+
+        # downscale-only guard (Euclidean)
+        norm_combined = combined_flat.norm().clamp_min(eps)
+        scale = torch.minimum(torch.tensor(1.0, device=device), norm_sum_orig / norm_combined)
+        combined_flat = combined_flat * scale
+
+        return self._unflatten_to_param_shapes(combined_flat, objective_grads[0])
+
+    def _proj_simplex(self, w):
+        # Project onto probability simplex {w: sum w = 1, w >= 0}
+        # Duchi et al. (2008)
+        u, _ = torch.sort(w, descending=True)
+        css = torch.cumsum(u, dim=0)
+        rho = torch.nonzero(u > (css - 1) / torch.arange(1, w.numel()+1, device=w.device), as_tuple=False)[-1].item()
+        theta = (css[rho] - 1.0) / (rho + 1.0)
+        return torch.clamp(w - theta, min=0.0)
+
+    @torch.no_grad()
+    def apply_cagrad(self, objective_grads, c=0.5, steps=25, lr=0.1, eps=1e-12, downscale_only=True):
+        """
+        Conflict-Averse Gradient Descent (whole-model).
+        objective_grads: List[List[param_tensor]] per objective (length m)
+        c in [0,1): radius parameter from the paper (Alg.1); typical 0.2–0.6.
+        """
+        device = self.device
+        m = len(objective_grads)
+
+        # Flatten: G_rows = [m, D] (each row = g_i^T)
+        G_rows = self._flatten_grads(objective_grads)                 # [m, D]
+        g0 = G_rows.mean(dim=0)                                       # [D]
+        phi = (c * g0.norm().clamp_min(eps)) ** 2                     # scalar
+
+        # Gram matrix K = G G^T (m x m); and b = K 1
+        K = G_rows @ G_rows.t()                                       # [m, m]
+        ones = torch.ones(m, device=device)
+        b = K @ ones                                                  # [m]
+
+        # Solve min_{w in simplex} f(w) = (1/m) b^T w + sqrt(phi) * sqrt(w^T K w)
+        w = torch.full((m,), 1.0 / m, device=device)
+        for _ in range(steps):
+            Kw = K @ w
+            s = torch.dot(w, Kw).clamp_min(eps)                       # w^T K w
+            grad = (b / m) + (math.sqrt(phi) * Kw) / torch.sqrt(s)    # ∇f(w)
+            w = w - lr * grad
+            w = self._proj_simplex(w)
+
+        # Build gw = (1/m) sum_i w_i * g_i, then d* = g0 + sqrt(phi)/||gw|| * gw
+        gw = (w @ G_rows) / m                                         # [D]
+        gw_norm = gw.norm().clamp_min(eps)
+        d = g0 + (math.sqrt(phi) / gw_norm) * gw                      # [D]
+
+        # (Optional) downscale-only guard to avoid larger-than-baseline step in PPO
+        if downscale_only:
+            g_sum_orig = G_rows.sum(dim=0)
+            scale = torch.minimum(torch.tensor(1.0, device=device),
+                                g_sum_orig.norm().clamp_min(eps) / d.norm().clamp_min(eps))
+            d = d * scale
+
+        # Unflatten back to param-shaped tensors
+        combined = []
+        start = 0
+        for g in objective_grads[0]:
+            n = g.numel()
+            combined.append(d[start:start+n].view_as(g))
+            start += n
+        return combined
+
+    @torch.no_grad()
+    def apply_pcgrad(self, objective_grads, normpres: bool = False, gradnorm: bool = False):
+        num_objectives = len(objective_grads)
+        eps = 1e-8
+
+        # Flatten per-objective grads: [m, D]
         flat_grads = torch.stack([
             torch.cat([g.flatten() for g in grad_list])
             for grad_list in objective_grads
-        ])  # [num_objectives, param_dim]
+        ])  # [num_objectives, D]
+
+        # --- Baseline (no projection) summed norm we'll preserve if normpres ---
+        g_sum_orig = flat_grads.sum(dim=0)
+        target_norm = g_sum_orig.norm().clamp_min(eps)
 
         # === PCGrad Conflict Resolution ===
-        rand_perm = torch.randperm(num_objectives)
+        rand_perm = torch.randperm(num_objectives, device=flat_grads.device)
         projected_grads = flat_grads.clone()
-
+        orig_dtype = flat_grads.dtype
+        if orig_dtype in (torch.float16, torch.bfloat16):
+            flat_grads = flat_grads.float()
+            projected_grads = projected_grads.float()
+            
         for i_idx in range(num_objectives):
-            i = rand_perm[i_idx]
+            i = rand_perm[i_idx].item()
             g_i = projected_grads[i]
             for j_idx in range(i_idx):
-                j = rand_perm[j_idx]
+                j = rand_perm[j_idx].item()
                 g_j = projected_grads[j]
                 dot_prod = torch.dot(g_i, g_j)
-                if dot_prod < 0:
-                    proj_coeff = dot_prod / (g_j.norm() ** 2 + 1e-10)
+                tol = 1e-12
+                nj2 = g_j.dot(g_j)
+                if (dot_prod < -tol) and (nj2 > tol):
+                    proj_coeff = dot_prod / (nj2 + eps)
                     g_i = g_i - proj_coeff * g_j
             projected_grads[i] = g_i
 
-        # === GradNorm (with or without norm preservation) ===
+        # === Combine (your existing branches) ===
         if gradnorm:
-            if normpres:
-                # Norm Preservation (per-task scaling)
-                avg_orig_grad = flat_grads.mean(dim=0)
-                target_norm = avg_orig_grad.norm()
-                norms = projected_grads.norm(dim=1, keepdim=True)
-                scaled_grads = projected_grads * (target_norm / (norms + 1e-8))
-            else:
-                scaled_grads = projected_grads  # no norm preservation
-
-            # GradNorm targets (training rates)
+            # (unchanged aside from final global rescale below)
+            scaled_grads = projected_grads  # you can keep your GradNorm weighting here if you use it
+            # GradNorm targets...
             with torch.no_grad():
                 L_hat = self.initial_losses
                 L_t = self.current_losses
@@ -166,43 +355,45 @@ class PPO:
                 mean_rate = training_rates.mean()
                 target_grad_norms = (training_rates / mean_rate) ** self.gradnorm_alpha
 
-            # Apply current weights before computing norms
             weighted_grads = scaled_grads * self.loss_weights.view(-1, 1)
             actual_grad_norms = weighted_grads.norm(dim=1)
             gradnorm_loss = torch.nn.functional.l1_loss(actual_grad_norms, target_grad_norms, reduction='sum')
 
-            # Backward to update loss_weights only
             self.optimizer.zero_grad()
             gradnorm_loss.backward()
 
-            # Final gradient to apply
-            combined_flat = weighted_grads.mean(dim=0)
-
-        elif normpres:
-            # === Norm Preservation without GradNorm ===
-            g_sum_orig = flat_grads.sum(dim=0)
-            g_sum_proj = projected_grads.sum(dim=0)
-            denom = g_sum_proj.norm() + 1e-8
-            scale = g_sum_orig.norm() / denom
-            combined_flat = g_sum_proj * scale
-
+            combined_flat = weighted_grads.mean(dim=0)  # or .sum(dim=0) if that's your preferred semantics
         else:
-            # === Plain average (no GradNorm, no normpres) ===
+            # Plain PCGrad combine (sum semantics)
             combined_flat = projected_grads.sum(dim=0)
 
-        # === Unflatten back to original shape ===
-        combined_grads = []
+        # === Final-sum norm preservation (global) ===
+        if normpres:
+            curr_norm = combined_flat.norm().clamp_min(eps)
+            scale = torch.minimum(torch.tensor(1.0, device=combined_flat.device),
+                                target_norm / curr_norm) # for safety
+            combined_flat = combined_flat * scale
+
+            # print scale:
+            #print(f"PCGrad scale: {scale.item():.4f}")  # Debugging line, can be removed
+
+
+            # If you’d rather never up-scale, use downscale-only:
+            # scale = torch.minimum(torch.tensor(1.0, device=combined_flat.device), target_norm / curr_norm)
+            # combined_flat = combined_flat * scale
+
+        # === Unflatten back to param shapes ===
+        combined = []
         start = 0
         for g in objective_grads[0]:
-            numel = g.numel()
-            combined_grads.append(combined_flat[start:start + numel].view_as(g))
-            start += numel
-
-        return combined_grads
-
+            n = g.numel()
+            combined.append(combined_flat[start:start + n].view_as(g))
+            start += n
+        return combined
 
 
-    def update_multihead(self, pcgrad=False, gradnorm=False, normpres=False):
+
+    def update_multihead(self, pcgrad=False, gradnorm=False, normpres=False, gradvac=False, cagrad=False):
         mean_value_loss = 0
         mean_component_value_loss = torch.zeros((self.actor_critic.num_reward_components), device=self.device)
         mean_surrogate_loss = 0
@@ -261,8 +452,8 @@ class PPO:
                         param_group["lr"] = self.learning_rate
 
             # Surrogate loss
-            ratio = torch.exp(actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch))
-            ratio = ratio.unsqueeze(1)  # shape: [B, 1]
+            log_ratio = (actions_log_prob_batch - old_actions_log_prob_batch.squeeze()).clamp(-20, 20)
+            ratio = log_ratio.exp().unsqueeze(1)
             clip_fraction = ((ratio < 1.0 - self.clip_param) | (ratio > 1.0 + self.clip_param)).float().mean()
             mean_clip_fraction += clip_fraction.item()
 
@@ -315,8 +506,58 @@ class PPO:
 
             # Compute gradients for all components in one backward pass
             # Create a tensor of ones for each component to compute gradients
-            if not pcgrad:
+            if not pcgrad and not gradvac and not cagrad:
                 loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
+                loss.backward()
+            elif gradvac:
+                num_components = mean_component_surrogate_loss.size(0)
+                component_grads = []
+                for i in range(num_components):
+                    grads = torch.autograd.grad(
+                        outputs=mean_component_surrogate_loss[i],
+                        inputs=self.actor_critic.parameters(),
+                        retain_graph=True, create_graph=False, allow_unused=True
+                    )
+                    grads = [g if g is not None else torch.zeros_like(p) for g, p in zip(grads, self.actor_critic.parameters())]
+                    component_grads.append(grads)
+
+                # === GradVac (whole-model) ===
+                vaccinated = self.apply_gradvac(component_grads)
+
+                # Load GradVac-updated (summed) grads
+                for p, g in zip(self.actor_critic.parameters(), vaccinated):
+                    if p.requires_grad:
+                        p.grad = g
+
+                # Add value/entropy grads on top
+                value_loss.backward(retain_graph=True)
+                if self.entropy_coef > 0:
+                    (-self.entropy_coef * entropy_batch.mean()).backward()
+
+            elif cagrad:
+                num_components = mean_component_surrogate_loss.size(0)
+                component_grads = []
+                for i in range(num_components):
+                    grads = torch.autograd.grad(
+                        outputs=mean_component_surrogate_loss[i],
+                        inputs=self.actor_critic.parameters(),
+                        retain_graph=True, create_graph=False, allow_unused=True
+                    )
+                    grads = [g if g is not None else torch.zeros_like(p) for g, p in zip(grads, self.actor_critic.parameters())]
+                    component_grads.append(grads)
+
+                # === CAGrad (whole-model, mean semantics) ===
+                combined = self.apply_cagrad(component_grads, c=self.cagrad_c, steps=self.cagrad_steps, lr=self.cagrad_lr)
+
+                for p, g in zip(self.actor_critic.parameters(), combined):
+                    if p.requires_grad:
+                        p.grad = g
+
+                # Add value/entropy grads on top
+                value_loss.backward(retain_graph=True)
+                if self.entropy_coef > 0:
+                    (-self.entropy_coef * entropy_batch.mean()).backward()
+
             else:
                 num_components = mean_component_surrogate_loss.size(0)
                 component_grads = []
@@ -385,9 +626,9 @@ class PPO:
             "grad_norms": [
                 torch.norm(torch.stack([torch.norm(g.detach()) for g in grads if g is not None]))
                 for grads in component_grads
-            ] if pcgrad else None,
-            "grad_angles": compute_grad_angles(component_grads) if pcgrad else None,
-            "grad_projection_magnitude": (sum((torch.norm(g.detach()) for g in projected_grads)) / len(projected_grads)) if pcgrad else None,
+            ] if pcgrad or gradvac else None,
+            "grad_angles": compute_grad_angles(component_grads) if pcgrad or gradvac else None,
+            "grad_projection_magnitude": (sum((torch.norm(g.detach()) for g in projected_grads)) / len(projected_grads)) if pcgrad or gradvac else None,
             "action_magnitudes": actions_batch.abs().mean(dim=0).detach().cpu(),
         }
     
