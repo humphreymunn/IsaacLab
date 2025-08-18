@@ -52,11 +52,17 @@ class OnPolicyRunner:
         except AttributeError:
             self.reward_components = 1 if not multihead else env.unwrapped.cfg.reward_components
 
+        try:
+            self.reward_component_names = env.unwrapped.cfg.reward_component_names
+            self.reward_component_task_rew = env.unwrapped.cfg.reward_component_task_rew
+        except AttributeError:
+            assert False 
+
         self.actor_critic: ActorCritic | ActorCriticRecurrent = actor_critic_class(
             num_obs, num_critic_obs, self.env.num_actions, self.reward_components, **self.policy_cfg, **rnn_params
         ).to(self.device)
         alg_class = eval(self.alg_cfg.pop("class_name"))  # PPO
-        self.alg: PPO = alg_class(self.actor_critic, device=self.device, **self.alg_cfg, gradnorm=gradnorm)
+        self.alg: PPO = alg_class(self.actor_critic, device=self.device, **self.alg_cfg, gradnorm=gradnorm, reward_component_names=self.reward_component_names,reward_component_task_rew=self.reward_component_task_rew)
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
         self.empirical_normalization = self.cfg["empirical_normalization"]

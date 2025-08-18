@@ -34,6 +34,8 @@ class PPO:
         desired_kl=0.01,
         device="cpu",
         gradnorm=False,
+        reward_component_names=None,
+        reward_component_task_rew=None,
     ):
         self.device = device
 
@@ -79,6 +81,9 @@ class PPO:
         self.cagrad_c = 0.5          # trade-off knob (0 <= c < 1). 0.4–0.6 typical
         self.cagrad_steps = 25       # simplex PGD steps for the dual
         self.cagrad_lr = 0.1         # step size for the dual
+
+        self.reward_component_names = reward_component_names
+        self.reward_component_task_rew = reward_component_task_rew
 
     def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, reward_components):
         self.storage = RolloutStorage(
@@ -317,72 +322,53 @@ class PPO:
             for grad_list in objective_grads
         ])  # [num_objectives, D]
 
-        # --- Baseline (no projection) summed norm we'll preserve if normpres ---
+        # Norm preservation baseline
         g_sum_orig = flat_grads.sum(dim=0)
         target_norm = g_sum_orig.norm().clamp_min(eps)
 
-        # === PCGrad Conflict Resolution ===
-        rand_perm = torch.randperm(num_objectives, device=flat_grads.device)
+        # Track task vs penalty
+        is_task = torch.tensor(
+            [name in self.reward_component_task_rew for name in self.reward_component_names],
+            device=flat_grads.device,
+            dtype=torch.bool
+        )
+
         projected_grads = flat_grads.clone()
         orig_dtype = flat_grads.dtype
         if orig_dtype in (torch.float16, torch.bfloat16):
             flat_grads = flat_grads.float()
             projected_grads = projected_grads.float()
-            
-        for i_idx in range(num_objectives):
-            i = rand_perm[i_idx].item()
-            g_i = projected_grads[i]
-            for j_idx in range(i_idx):
-                j = rand_perm[j_idx].item()
-                g_j = projected_grads[j]
-                dot_prod = torch.dot(g_i, g_j)
-                tol = 1e-12
-                nj2 = g_j.dot(g_j)
-                if (dot_prod < -tol) and (nj2 > tol):
-                    proj_coeff = dot_prod / (nj2 + eps)
-                    g_i = g_i - proj_coeff * g_j
-            projected_grads[i] = g_i
 
-        # === Combine (your existing branches) ===
-        if gradnorm:
-            # (unchanged aside from final global rescale below)
-            scaled_grads = projected_grads  # you can keep your GradNorm weighting here if you use it
-            # GradNorm targets...
-            with torch.no_grad():
-                L_hat = self.initial_losses
-                L_t = self.current_losses
-                training_rates = (L_t / L_hat).detach()
-                mean_rate = training_rates.mean()
-                target_grad_norms = (training_rates / mean_rate) ** self.gradnorm_alpha
+        # Resolve only task–penalty conflicts
+        for i in range(num_objectives):
+            for j in range(num_objectives):
+                if i == j:
+                    continue
+                # Penalty vs Task, penalty is projected
+                if (not is_task[i]) and is_task[j]:
+                    g_pen = projected_grads[i]
+                    g_task = projected_grads[j]
+                    dot_prod = torch.dot(g_pen, g_task)
+                    tol = 1e-12
+                    nt2 = g_task.dot(g_task)
+                    if (dot_prod < -tol) and (nt2 > tol):
+                        proj_coeff = dot_prod / (nt2 + eps)
+                        g_pen = g_pen - proj_coeff * g_task
+                        projected_grads[i] = g_pen
 
-            weighted_grads = scaled_grads * self.loss_weights.view(-1, 1)
-            actual_grad_norms = weighted_grads.norm(dim=1)
-            gradnorm_loss = torch.nn.functional.l1_loss(actual_grad_norms, target_grad_norms, reduction='sum')
+        # Combine grads (sum semantics)
+        combined_flat = projected_grads.sum(dim=0)
 
-            self.optimizer.zero_grad()
-            gradnorm_loss.backward()
-
-            combined_flat = weighted_grads.mean(dim=0)  # or .sum(dim=0) if that's your preferred semantics
-        else:
-            # Plain PCGrad combine (sum semantics)
-            combined_flat = projected_grads.sum(dim=0)
-
-        # === Final-sum norm preservation (global) ===
+        # Norm preservation
         if normpres:
             curr_norm = combined_flat.norm().clamp_min(eps)
-            scale = torch.minimum(torch.tensor(1.0, device=combined_flat.device),
-                                target_norm / curr_norm) # for safety
+            scale = torch.minimum(
+                torch.tensor(1.0, device=combined_flat.device),
+                target_norm / curr_norm
+            )
             combined_flat = combined_flat * scale
 
-            # print scale:
-            #print(f"PCGrad scale: {scale.item():.4f}")  # Debugging line, can be removed
-
-
-            # If you’d rather never up-scale, use downscale-only:
-            # scale = torch.minimum(torch.tensor(1.0, device=combined_flat.device), target_norm / curr_norm)
-            # combined_flat = combined_flat * scale
-
-        # === Unflatten back to param shapes ===
+        # Unflatten back to param shapes
         combined = []
         start = 0
         for g in objective_grads[0]:
@@ -558,7 +544,7 @@ class PPO:
                 if self.entropy_coef > 0:
                     (-self.entropy_coef * entropy_batch.mean()).backward()
 
-            else:
+            else: # pcgrad
                 num_components = mean_component_surrogate_loss.size(0)
                 component_grads = []
                 
