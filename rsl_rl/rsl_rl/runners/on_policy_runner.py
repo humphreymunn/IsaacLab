@@ -56,7 +56,7 @@ class OnPolicyRunner:
             self.reward_component_names = env.unwrapped.cfg.reward_component_names
             self.reward_component_task_rew = env.unwrapped.cfg.reward_component_task_rew
         except AttributeError:
-            assert False 
+            pass
 
         self.actor_critic: ActorCritic | ActorCriticRecurrent = actor_critic_class(
             num_obs, num_critic_obs, self.env.num_actions, self.reward_components, **self.policy_cfg, **rnn_params

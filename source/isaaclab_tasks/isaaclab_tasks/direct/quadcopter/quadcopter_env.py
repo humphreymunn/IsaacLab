@@ -130,6 +130,7 @@ class QuadcopterEnv(DirectRLEnv):
         self.set_debug_vis(self.cfg.debug_vis)
         self.reward_components = 3
         self.reward_component_names = ["lin_vel", "ang_vel", "distance_to_goal"]
+        self.reward_component_task_rew = ["distance_to_goal"]
 
     def _setup_scene(self):
         self._robot = Articulation(self.cfg.robot)

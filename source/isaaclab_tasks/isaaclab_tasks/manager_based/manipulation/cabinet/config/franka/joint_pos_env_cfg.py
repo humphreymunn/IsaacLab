@@ -82,7 +82,7 @@ class FrankaCabinetEnvCfg(CabinetEnvCfg):
 
         self.reward_components = 9
         self.reward_component_names = ["approach_ee_handle", "align_ee_handle", "approach_gripper_handle", "align_grasp_around_handle", "grasp_handle", "open_drawer_bonus", "multi_stage_open_drawer", "action_rate_l2", "joint_vel"]
-
+        self.reward_component_task_rew = ["approach_ee_handle", "align_ee_handle", "approach_gripper_handle", "align_grasp_around_handle", "grasp_handle", "open_drawer_bonus", "multi_stage_open_drawer"]
 
 @configclass
 class FrankaCabinetEnvCfg_PLAY(FrankaCabinetEnvCfg):

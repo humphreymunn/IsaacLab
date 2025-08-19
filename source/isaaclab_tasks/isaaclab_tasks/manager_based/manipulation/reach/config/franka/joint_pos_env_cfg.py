@@ -44,6 +44,7 @@ class FrankaReachEnvCfg(ReachEnvCfg):
         self.commands.ee_pose.ranges.pitch = (math.pi, math.pi)
         self.reward_components = 5
         self.reward_component_names = ["end_effector_position_tracking", "end_effector_position_tracking_fine_grained", "end_effector_orientation_tracking", "action_rate", "joint_vel"]
+        self.reward_component_task_rew = ["end_effector_position_tracking", "end_effector_position_tracking_fine_grained", "end_effector_orientation_tracking"]
 
 @configclass
 class FrankaReachEnvCfg_PLAY(FrankaReachEnvCfg):

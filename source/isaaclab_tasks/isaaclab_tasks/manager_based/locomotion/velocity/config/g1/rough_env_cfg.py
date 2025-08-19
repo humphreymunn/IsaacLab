@@ -162,6 +162,7 @@ class G1RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             attr for attr in dir(self.rewards)
             if isinstance(getattr(self.rewards, attr), RewTerm) and not attr.startswith("__")
         ]
+        self.reward_component_task_rew = ["termination_penalty", "track_lin_vel_xy_exp", "track_ang_vel_z_exp"]
 
 @configclass
 class G1RoughEnvCfg_PLAY(G1RoughEnvCfg):

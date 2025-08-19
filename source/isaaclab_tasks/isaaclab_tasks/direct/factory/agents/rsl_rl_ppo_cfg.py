@@ -32,7 +32,7 @@ class FactoryPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         clip_param=0.2,  # from e_clip
         entropy_coef=0.0,  # from entropy_coef
         num_learning_epochs=5,  # from mini_epochs
-        num_mini_batches=4,
+        num_mini_batches=16,
         learning_rate=1.0e-4,
         schedule="adaptive",  # from lr_schedule
         gamma=0.99,

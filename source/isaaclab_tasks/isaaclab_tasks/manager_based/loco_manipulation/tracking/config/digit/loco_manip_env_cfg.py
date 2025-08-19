@@ -236,7 +236,7 @@ class DigitLocoManipEnvCfg(DigitRoughEnvCfg):
         self.reward_components = 26
         self.reward_component_names = ["joint_vel_hip_yaw", "left_ee_pos_tracking", "left_ee_pos_tracking_fine_grained", "left_end_effector_orientation_tracking", "right_ee_pos_tracking", "right_ee_pos_tracking_fine_grained", "right_end_effector_orientation_tracking", "termination_penalty", "track_lin_vel_xy_exp", "track_ang_vel_z_exp", "feet_air_time", "feet_slide", "dof_torques_l2", "dof_acc_l2", "action_rate_l2", "flat_orientation_l2", "stand_still", "lin_vel_z_l2", "ang_vel_xy_l2", "no_jumps", "dof_pos_limits", "joint_deviation_hip_roll", "joint_deviation_hip_yaw", "joint_deviation_knee", "joint_deviation_feet", "undesired_contacts"]
         # separate the task rewards from the penalties
-        self.reward_component_task_rew = ["left_ee_pos_tracking", "left_ee_pos_tracking_fine_grained", "left_end_effector_orientation_tracking", "right_ee_pos_tracking", "right_ee_pos_tracking_fine_grained", "right_end_effector_orientation_tracking", "track_lin_vel_xy_exp", "track_ang_vel_z_exp"]
+        self.reward_component_task_rew = ["left_ee_pos_tracking", "left_ee_pos_tracking_fine_grained", "left_end_effector_orientation_tracking", "right_ee_pos_tracking", "right_ee_pos_tracking_fine_grained", "right_end_effector_orientation_tracking", "track_lin_vel_xy_exp", "track_ang_vel_z_exp", "termination_penalty"]
 
 class DigitLocoManipEnvCfg_PLAY(DigitLocoManipEnvCfg):
 

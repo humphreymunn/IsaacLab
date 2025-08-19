@@ -23,7 +23,8 @@ class AllegroCubeEnvCfg(inhand_env_cfg.InHandObjectEnvCfg):
         self.scene.robot = ALLEGRO_HAND_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
         self.reward_components = 5
         self.reward_component_names = ["track_orientation_inv_l2", "success_bonus", "joint_vel_l2", "action_l2", "action_rate_l2"]
-
+        self.reward_component_task_rew = ["track_orientation_inv_l2", "success_bonus"]
+                                          
 @configclass
 class AllegroCubeEnvCfg_PLAY(AllegroCubeEnvCfg):
     def __post_init__(self):

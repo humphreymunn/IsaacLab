@@ -38,7 +38,8 @@ class InHandManipulationEnv(DirectRLEnv):
 
         self.reward_components = 5
         self.reward_component_names = ["dist_rew", "rot_rew", "action_penalty", "success_orientation","fall_penalty"]
-
+        self.reward_component_task_rew = ["dist_rew", "rot_rew", "success_orientation", "fall_penalty"]
+        
         # list of actuated joints
         self.actuated_dof_indices = list()
         for joint_name in cfg.actuated_joint_names:

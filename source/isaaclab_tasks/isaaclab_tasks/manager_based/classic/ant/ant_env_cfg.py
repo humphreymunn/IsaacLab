@@ -193,3 +193,4 @@ class AntEnvCfg(ManagerBasedRLEnvCfg):
             attr for attr in dir(self.rewards)
             if isinstance(getattr(self.rewards, attr), RewTerm) and not attr.startswith("__")
         ]
+        self.reward_component_task_rew = ["progress", "alive", "upright", "move_to_target"]

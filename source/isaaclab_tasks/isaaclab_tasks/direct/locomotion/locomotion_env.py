@@ -64,6 +64,7 @@ class LocomotionEnv(DirectRLEnv):
             "actions_y",
             "actions_z",
         ]
+        self.reward_component_task_rew = ["up_proj", "heading_proj", "vel_loc_x", "vel_loc_y", "angvel_loc_x", "angvel_loc_y", "angle_to_target"]
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot)

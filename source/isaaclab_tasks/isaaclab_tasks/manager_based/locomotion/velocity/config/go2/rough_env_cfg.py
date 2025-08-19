@@ -72,6 +72,7 @@ class UnitreeGo2RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             "flat_orientation_l2",
             "dof_pos_limits"
         ]
+        self.reward_component_task_rew = ["track_lin_vel_xy_exp", "track_ang_vel_z_exp"]
 
 @configclass
 class UnitreeGo2RoughEnvCfg_PLAY(UnitreeGo2RoughEnvCfg):

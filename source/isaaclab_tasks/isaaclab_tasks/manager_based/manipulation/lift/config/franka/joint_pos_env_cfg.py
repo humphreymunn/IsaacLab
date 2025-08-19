@@ -81,7 +81,7 @@ class FrankaCubeLiftEnvCfg(LiftEnvCfg):
         )
         self.reward_components = 6
         self.reward_component_names = ["reaching_object", "lifting_object", "object_goal_tracking", "object_goal_tracking_fine_grained", "action_rate", "joint_vel"]
-
+        self.reward_component_task_rew = ["reaching_object", "lifting_object", "object_goal_tracking", "object_goal_tracking_fine_grained"]
 
 @configclass
 class FrankaCubeLiftEnvCfg_PLAY(FrankaCubeLiftEnvCfg):

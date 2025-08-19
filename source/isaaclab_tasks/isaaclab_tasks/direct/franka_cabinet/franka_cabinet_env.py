@@ -194,6 +194,9 @@ class FrankaCabinetEnv(DirectRLEnv):
 
         self.reward_components = 9
         self.reward_component_names = ["dist_reward", "rot_reward", "open_reward", "action_penalty","lfinger_dist","rfinger_dist", "draw_open_little", "draw_open_medium", "draw_open_large"]
+        # separate the task rewards from the penalties
+        self.reward_component_task_rew = ["dist_reward", "rot_reward", "open_reward", "lfinger_dist", "rfinger_dist", "draw_open_little", "draw_open_medium", "draw_open_large"]
+
         self.dt = self.cfg.sim.dt * self.cfg.decimation
 
         # create auxiliary variables for computing applied action, observations and rewards
