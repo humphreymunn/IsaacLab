@@ -316,7 +316,7 @@ class PPO:
         num_objectives = len(objective_grads)
         eps = 1e-8
 
-        # Flatten per-objective grads: [m, D]
+        # Flatten per-objective grads: [m, D] (originally list of tensors)
         flat_grads = torch.stack([
             torch.cat([g.flatten() for g in grad_list])
             for grad_list in objective_grads
@@ -334,27 +334,33 @@ class PPO:
         )
 
         projected_grads = flat_grads.clone()
-        orig_dtype = flat_grads.dtype
-        if orig_dtype in (torch.float16, torch.bfloat16):
-            flat_grads = flat_grads.float()
-            projected_grads = projected_grads.float()
+        order_i = torch.randperm(num_objectives, device=flat_grads.device)
 
-        # Resolve only task–penalty conflicts
-        for i in range(num_objectives):
-            for j in range(num_objectives):
-                if i == j:
+        for idx_i in order_i.tolist():
+            # Only project penalties (i) against tasks (j)
+            if is_task[idx_i]:
+                continue
+                
+            # Work with a view we’ll update
+            g_pen = projected_grads[idx_i]
+
+            # Randomize the order of the "other" objectives too
+            order_j = torch.randperm(num_objectives, device=flat_grads.device)
+            for idx_j in order_j.tolist():
+                if idx_j == idx_i or not is_task[idx_j]:
                     continue
-                # Penalty vs Task, penalty is projected
-                if (not is_task[i]) and is_task[j]:
-                    g_pen = projected_grads[i]
-                    g_task = projected_grads[j]
-                    dot_prod = torch.dot(g_pen, g_task)
-                    tol = 1e-12
-                    nt2 = g_task.dot(g_task)
-                    if (dot_prod < -tol) and (nt2 > tol):
-                        proj_coeff = dot_prod / (nt2 + eps)
-                        g_pen = g_pen - proj_coeff * g_task
-                        projected_grads[i] = g_pen
+
+                g_task = projected_grads[idx_j]
+                dot_prod = torch.dot(g_pen, g_task)
+                nt2 = torch.dot(g_task, g_task)  # ||g_task||^2
+
+                # Conflict: negative dot product; also guard degenerate norms
+                if (dot_prod < 0.0) and (nt2 > 1e-12):
+                    proj_coeff = dot_prod / (nt2 + eps)
+                    g_pen = g_pen - proj_coeff * g_task
+
+            # Store back the fully projected penalty gradient
+            projected_grads[idx_i] = g_pen
 
         # Combine grads (sum semantics)
         combined_flat = projected_grads.sum(dim=0)
