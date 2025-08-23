@@ -316,60 +316,64 @@ class PPO:
         num_objectives = len(objective_grads)
         eps = 1e-8
 
-        # Flatten per-objective grads: [m, D] (originally list of tensors)
+        # Flatten per-objective grads: [m, D]
         flat_grads = torch.stack([
             torch.cat([g.flatten() for g in grad_list])
             for grad_list in objective_grads
         ])  # [num_objectives, D]
 
+        device = flat_grads.device
+        projected_grads = flat_grads.clone()
+
         # Norm preservation baseline
         g_sum_orig = flat_grads.sum(dim=0)
         target_norm = g_sum_orig.norm().clamp_min(eps)
 
-        # Track task vs penalty
+        # Task mask (aligned with reward order)
         is_task = torch.tensor(
             [name in self.reward_component_task_rew for name in self.reward_component_names],
-            device=flat_grads.device,
-            dtype=torch.bool
+            device=device, dtype=torch.bool
         )
 
-        projected_grads = flat_grads.clone()
-        order_i = torch.randperm(num_objectives, device=flat_grads.device)
+        # Non-deterministic order for i
+        perm_i = torch.randperm(num_objectives, device=device)
+        for i in perm_i.tolist():
+            gi = projected_grads[i]
 
-        for idx_i in order_i.tolist():
-            # Only project penalties (i) against tasks (j)
-            if is_task[idx_i]:
-                continue
-                
-            # Work with a view we’ll update
-            g_pen = projected_grads[idx_i]
+            # Non-deterministic order for j each time
+            perm_j = torch.randperm(num_objectives, device=device).tolist()
 
-            # Randomize the order of the "other" objectives too
-            order_j = torch.randperm(num_objectives, device=flat_grads.device)
-            for idx_j in order_j.tolist():
-                if idx_j == idx_i or not is_task[idx_j]:
-                    continue
-
-                g_task = projected_grads[idx_j]
-                dot_prod = torch.dot(g_pen, g_task)
-                nt2 = torch.dot(g_task, g_task)  # ||g_task||^2
-
-                # Conflict: negative dot product; also guard degenerate norms
-                if (dot_prod < 0.0) and (nt2 > 1e-12):
-                    proj_coeff = dot_prod / (nt2 + eps)
-                    g_pen = g_pen - proj_coeff * g_task
-
-            # Store back the fully projected penalty gradient
-            projected_grads[idx_i] = g_pen
+            if is_task[i]:
+                # Task–task: project task i against other tasks
+                for j in perm_j:
+                    if j == i or not is_task[j]:
+                        continue
+                    gj = projected_grads[j]
+                    dot = torch.dot(gi, gj)
+                    nt2 = torch.dot(gj, gj)
+                    if (dot < 0.0) and (nt2 > 1e-12):
+                        gi = gi - (dot / (nt2 + eps)) * gj
+                projected_grads[i] = gi
+            else:
+                # Penalty–task: project penalty i against tasks only
+                for j in perm_j:
+                    if not is_task[j]:
+                        continue
+                    gj = projected_grads[j]
+                    dot = torch.dot(gi, gj)
+                    nt2 = torch.dot(gj, gj)
+                    if (dot < 0.0) and (nt2 > 1e-12):
+                        gi = gi - (dot / (nt2 + eps)) * gj
+                projected_grads[i] = gi
 
         # Combine grads (sum semantics)
         combined_flat = projected_grads.sum(dim=0)
 
-        # Norm preservation
+        # Optional norm preservation
         if normpres:
             curr_norm = combined_flat.norm().clamp_min(eps)
             scale = torch.minimum(
-                torch.tensor(1.0, device=combined_flat.device),
+                torch.tensor(1.0, device=combined_flat.device, dtype=combined_flat.dtype),
                 target_norm / curr_norm
             )
             combined_flat = combined_flat * scale
@@ -385,7 +389,7 @@ class PPO:
 
 
 
-    def update_multihead(self, pcgrad=False, gradnorm=False, normpres=False, gradvac=False, cagrad=False):
+    def update_multihead(self, pcgrad=False, gradnorm=False, normpres=False):
         mean_value_loss = 0
         mean_component_value_loss = torch.zeros((self.actor_critic.num_reward_components), device=self.device)
         mean_surrogate_loss = 0
@@ -498,58 +502,9 @@ class PPO:
 
             # Compute gradients for all components in one backward pass
             # Create a tensor of ones for each component to compute gradients
-            if not pcgrad and not gradvac and not cagrad:
+            if not pcgrad:
                 loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
                 loss.backward()
-            elif gradvac:
-                num_components = mean_component_surrogate_loss.size(0)
-                component_grads = []
-                for i in range(num_components):
-                    grads = torch.autograd.grad(
-                        outputs=mean_component_surrogate_loss[i],
-                        inputs=self.actor_critic.parameters(),
-                        retain_graph=True, create_graph=False, allow_unused=True
-                    )
-                    grads = [g if g is not None else torch.zeros_like(p) for g, p in zip(grads, self.actor_critic.parameters())]
-                    component_grads.append(grads)
-
-                # === GradVac (whole-model) ===
-                vaccinated = self.apply_gradvac(component_grads)
-
-                # Load GradVac-updated (summed) grads
-                for p, g in zip(self.actor_critic.parameters(), vaccinated):
-                    if p.requires_grad:
-                        p.grad = g
-
-                # Add value/entropy grads on top
-                value_loss.backward(retain_graph=True)
-                if self.entropy_coef > 0:
-                    (-self.entropy_coef * entropy_batch.mean()).backward()
-
-            elif cagrad:
-                num_components = mean_component_surrogate_loss.size(0)
-                component_grads = []
-                for i in range(num_components):
-                    grads = torch.autograd.grad(
-                        outputs=mean_component_surrogate_loss[i],
-                        inputs=self.actor_critic.parameters(),
-                        retain_graph=True, create_graph=False, allow_unused=True
-                    )
-                    grads = [g if g is not None else torch.zeros_like(p) for g, p in zip(grads, self.actor_critic.parameters())]
-                    component_grads.append(grads)
-
-                # === CAGrad (whole-model, mean semantics) ===
-                combined = self.apply_cagrad(component_grads, c=self.cagrad_c, steps=self.cagrad_steps, lr=self.cagrad_lr)
-
-                for p, g in zip(self.actor_critic.parameters(), combined):
-                    if p.requires_grad:
-                        p.grad = g
-
-                # Add value/entropy grads on top
-                value_loss.backward(retain_graph=True)
-                if self.entropy_coef > 0:
-                    (-self.entropy_coef * entropy_batch.mean()).backward()
-
             else: # pcgrad
                 num_components = mean_component_surrogate_loss.size(0)
                 component_grads = []
@@ -566,7 +521,7 @@ class PPO:
                     # Convert None gradients to zero tensors
                     grads = [g if g is not None else torch.zeros_like(p) for g, p in zip(grads, self.actor_critic.parameters())]
                     component_grads.append(grads)
-
+                
                 # Apply PCGrad
                 projected_grads = self.apply_pcgrad(component_grads, normpres, gradnorm)
 
@@ -595,16 +550,49 @@ class PPO:
         mean_surrogate_loss /= num_updates
         self.storage.clear()
 
+        def _flatten_grads(grads_list):
+            return torch.stack([torch.cat([g.view(-1) for g in grads])
+                                for grads in grads_list])  # [C, D]
+
+        grad_overall_conflict_pct = None
+        if pcgrad:
+            G = _flatten_grads(component_grads).detach()          # [C, D]
+            # Pairwise dot matrix
+            D = G @ G.t()                                         # [C, C]
+            # Only count each pair once (upper triangle, no diagonal)
+            C = G.size(0)
+            iu = torch.triu_indices(C, C, offset=1, device=G.device)
+            # Angle > 90°  <=> dot < 0  (no need to compute acos)
+            conflicts = (D[iu[0], iu[1]] < 0.0).float()           # [P], P=C*(C-1)/2
+            grad_overall_conflict_pct = (conflicts.mean() * 100.0).item()
+
         def compute_grad_angles(grads_list):
-            """Returns list of angles (in degrees) between every pair of gradient vectors."""
+            """Returns (angles, labels, pairs).
+            angles: list[float] (degrees)
+            labels: list[str]  e.g., 'rewardA_vs_rewardB'
+            pairs:  list[tuple[int,int]] (i,j) indices
+            """
             flat_grads = [torch.cat([g.view(-1) for g in grads]) for grads in grads_list]
-            angles = []
+            angles, labels, pairs = [], [], []
+
+            # Prefer names from PPO; fallback to generic
+            try:
+                names = list(self.reward_component_names)
+            except Exception:
+                names = [f"C{i}" for i in range(len(flat_grads))]
+
             for i in range(len(flat_grads)):
                 for j in range(i + 1, len(flat_grads)):
                     cos_sim = torch.nn.functional.cosine_similarity(flat_grads[i], flat_grads[j], dim=0).clamp(-1, 1)
                     angle = torch.acos(cos_sim) * (180 / torch.pi)
                     angles.append(angle.item())
-            return angles
+                    labels.append(f"{names[i]}_vs_{names[j]}")
+                    pairs.append((i, j))
+            return angles, labels, pairs
+
+        grad_angles, grad_angle_labels, grad_angle_pairs = None, None, None
+        if pcgrad:
+            grad_angles, grad_angle_labels, grad_angle_pairs = compute_grad_angles(component_grads)
 
         return {
             "mean_value_loss": mean_value_loss,
@@ -618,8 +606,11 @@ class PPO:
             "grad_norms": [
                 torch.norm(torch.stack([torch.norm(g.detach()) for g in grads if g is not None]))
                 for grads in component_grads
-            ] if pcgrad or gradvac else None,
-            "grad_angles": compute_grad_angles(component_grads) if pcgrad or gradvac else None,
+            ] if pcgrad else None,
+            "grad_angles": grad_angles,
+            "grad_overall_conflict_pct": grad_overall_conflict_pct,  # None if not pcgrad/gradvac
+            "grad_angle_labels": grad_angle_labels,   # <— NEW
+            "grad_angle_pairs": grad_angle_pairs,     # <— optional (indices)
             "grad_projection_magnitude": (sum((torch.norm(g.detach()) for g in projected_grads)) / len(projected_grads)) if pcgrad or gradvac else None,
             "action_magnitudes": actions_batch.abs().mean(dim=0).detach().cpu(),
         }

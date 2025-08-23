@@ -313,7 +313,7 @@ class OnPolicyRunner:
                 except Exception as e:
                     print(f"No curriculum present.")
 
-            update_logs = self.alg.update_multihead(self.pcgrad, self.gradnorm, self.normpres, self.gradvac)
+            update_logs = self.alg.update_multihead(self.pcgrad, self.gradnorm, self.normpres)
 
             stop = time.time()
             learn_time = stop - start
@@ -398,8 +398,18 @@ class OnPolicyRunner:
                     self.writer.add_scalar(f"Grad/Norm/Head_{reward_names[i]}", val.item(), locs["it"])
 
                 # Gradient angles between head pairs
-                for idx, angle in enumerate(locs["grad_angles"]):
-                    self.writer.add_scalar(f"Grad/Angle/Pair_{idx}", angle, locs["it"])
+                if locs["grad_angles"] is not None:
+                    labels = locs.get("grad_angle_labels", None)
+                    if labels is not None:
+                        for angle, label in zip(locs["grad_angles"], labels):
+                            self.writer.add_scalar(f"Grad/Angle/{label}", angle, locs["it"])
+                    else:
+                        # Fallback to old numeric naming
+                        for idx, angle in enumerate(locs["grad_angles"]):
+                            self.writer.add_scalar(f"Grad/Angle/Pair_{idx}", angle, locs["it"])
+                if locs.get("grad_overall_conflict_pct", None) is not None:
+                    self.writer.add_scalar("Grad/Conflict/OverallPct", locs["grad_overall_conflict_pct"], locs["it"])
+
 
                 # Projection magnitude (averaged across all grads)
                 self.writer.add_scalar("Grad/ProjectionMagnitude", locs["grad_projection_magnitude"], locs["it"])
