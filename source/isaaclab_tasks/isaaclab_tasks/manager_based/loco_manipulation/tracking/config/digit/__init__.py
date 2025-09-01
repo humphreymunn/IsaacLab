@@ -20,6 +20,17 @@ gym.register(
     },
 )
 
+gym.register(
+    id="Isaac-Tracking-LocoManip-Digit-Rough-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.loco_manip_rough_env_cfg:DigitLocoManipRoughEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DigitLocoManipRoughPPORunnerCfg",
+    },
+)
+
+
 
 gym.register(
     id="Isaac-Tracking-LocoManip-Digit-Play-v0",
@@ -28,5 +39,16 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": f"{__name__}.loco_manip_env_cfg:DigitLocoManipEnvCfg_PLAY",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DigitLocoManipPPORunnerCfg",
+    },
+)
+
+
+gym.register(
+    id="Isaac-Tracking-LocoManip-Digit-Rough-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.loco_manip_rough_env_cfg:DigitLocoManipRoughEnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DigitLocoManipRoughPPORunnerCfg",
     },
 )

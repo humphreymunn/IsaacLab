@@ -9,11 +9,11 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 
 
 @configclass
-class DigitLocoManipPPORunnerCfg(RslRlOnPolicyRunnerCfg):
+class G1LocoManipPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 2000
     save_interval = 50
-    experiment_name = "digit_loco_manip"
+    experiment_name = "g1_loco_manip"
     empirical_normalization = False
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
@@ -37,9 +37,9 @@ class DigitLocoManipPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     )
 
 @configclass
-class DigitLocoManipRoughPPORunnerCfg(DigitLocoManipPPORunnerCfg):
+class G1LocoManipRoughPPORunnerCfg(G1LocoManipPPORunnerCfg):
     def __post_init__(self):
         super().__post_init__()
-        self.experiment_name = "digit_loco_manip_rough"
+        self.experiment_name = "g1_loco_manip_rough"
         self.policy.actor_hidden_dims = [512, 256, 128]
         self.policy.critic_hidden_dims = [512, 256, 128]
