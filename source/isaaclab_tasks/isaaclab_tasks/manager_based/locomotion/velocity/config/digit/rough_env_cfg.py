@@ -243,6 +243,18 @@ class DigitRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.commands.base_velocity.rel_standing_envs = 0.1
         self.commands.base_velocity.resampling_time_range = (3.0, 8.0)
 
+        # get number of rewards in the cfg
+        self.reward_components = sum(
+            isinstance(getattr(self.rewards, attr), RewardTermCfg)
+            for attr in dir(self.rewards)
+            if not attr.startswith("__")  # skip dunder attributes
+        )
+        # set the names of the reward components
+        self.reward_component_names = [
+            attr for attr in dir(self.rewards)
+            if isinstance(getattr(self.rewards, attr), RewardTermCfg) and not attr.startswith("__")
+        ]
+        self.reward_component_task_rew = ["termination_penalty", "track_lin_vel_xy_exp", "track_ang_vel_z_exp", "stand_still", "feet_air_time"]
 
 @configclass
 class DigitRoughEnvCfg_PLAY(DigitRoughEnvCfg):
