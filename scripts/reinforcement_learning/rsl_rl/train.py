@@ -15,7 +15,7 @@ from isaaclab.app import AppLauncher
 
 # local imports
 import cli_args  # isort: skip
-
+import random
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
@@ -33,6 +33,12 @@ parser.add_argument("--use_normpres", action="store_true", default=False, help="
 parser.add_argument("--use_gradvac", action="store_true", default=False, help="Use GradVac for multi-head training.")
 parser.add_argument("--entropy_coef", type=float, default=None, help="Entropy coefficient for the PPO algorithm.")
 parser.add_argument("--architecture", type=str, default=None, help="Architecture of the RL agent. Specified as '56,56' etc. for actor and critic.")
+parser.add_argument("--energy_rew", action="store_true", default=False, help="Use energy reward.")
+parser.add_argument("--gait_rew", action="store_true", default=False, help="Use gait reward.")
+parser.add_argument("--baseh_rew", action="store_true", default=False, help="Use base height reward.")
+parser.add_argument("--armsw_rew", action="store_true", default=False, help="Use step length reward.")
+parser.add_argument("--armsp_rew", action="store_true", default=False, help="Use arm span reward.")
+parser.add_argument("--kneelft_rew", action="store_true", default=False, help="Use knee lift reward.")
 
 parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
@@ -118,19 +124,37 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
     )
-    '''if args_cli.use_pcgrad:
-        if "Rough-G1" in args_cli.task:
-            agent_cfg.algorithm.entropy_coef = 0.00025
+    if args_cli.use_pcgrad:
+        
+        if "Ant" in args_cli.task:
+            agent_cfg.algorithm.entropy_coef = 0.008446
+        elif "Humanoid" in args_cli.task:
+            agent_cfg.algorithm.entropy_coef = 0.004481
+        elif "Lift-Cube" in args_cli.task:
+            agent_cfg.algorithm.entropy_coef = 0.015918
+        elif "Drawer" in args_cli.task:
+            agent_cfg.algorithm.entropy_coef = 0.002378
+        elif "Quadcopter" in args_cli.task:
+            agent_cfg.algorithm.entropy_coef = 0.015918
+        elif "Reach-Franka" in args_cli.task:
+            agent_cfg.algorithm.entropy_coef = 0.015918
+        elif "Reach-Ur10" in args_cli.task:
+            agent_cfg.algorithm.entropy_coef = 0.008446
+        elif "Rough-G1" in args_cli.task:
+            agent_cfg.algorithm.entropy_coef = 0.004481
         elif "Rough-H1" in args_cli.task:
-            agent_cfg.algorithm.entropy_coef = 0.00025
+            agent_cfg.algorithm.entropy_coef = 0.008446
         elif "LocoManip-Digit" in args_cli.task:
-            agent_cfg.algorithm.entropy_coef = 0.0025
+            agent_cfg.algorithm.entropy_coef = 0.015918
         elif "Cube-Allegro" in args_cli.task:
-            agent_cfg.algorithm.entropy_coef = 0.0005
+            agent_cfg.algorithm.entropy_coef = 0.002378
         elif "Cube-Shadow" in args_cli.task:
-            agent_cfg.algorithm.entropy_coef = 0.00005
+            agent_cfg.algorithm.entropy_coef = 0.002378
         elif "Rough-Unitree-Go2" in args_cli.task:
-            agent_cfg.algorithm.entropy_coef = 0.0025'''
+            agent_cfg.algorithm.entropy_coef = 0.008446
+        elif "Throwing" in args_cli.task:
+            agent_cfg.algorithm.entropy_coef = 0.00066943
+
     if args_cli.entropy_coef is not None:
         agent_cfg.algorithm.entropy_coef = args_cli.entropy_coef
 
@@ -172,6 +196,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     log_dir += f"_{args_cli.entropy_coef}" if args_cli.entropy_coef is not None else ""
     log_dir += f"_{args_cli.architecture}" if args_cli.architecture is not None else ""
     log_dir += f"_{args_cli.seed}" if args_cli.seed is not None else ""
+    
+    if "Humanoid" in args_cli.task:
+        env_cfg.energy_rew = args_cli.energy_rew
+        env_cfg.gait_rew = args_cli.gait_rew
+        env_cfg.baseh_rew = args_cli.baseh_rew
+        env_cfg.armsw_rew = args_cli.armsw_rew
+        env_cfg.armsp_rew = args_cli.armsp_rew
+        env_cfg.kneelft_rew = args_cli.kneelft_rew
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
@@ -196,8 +228,34 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print_dict(video_kwargs, nesting=4)
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
+    
+
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+    if args_cli.energy_rew:
+        energy_rew_vec = torch.ones((env_cfg.scene.num_envs), dtype=torch.float32, device=agent_cfg.device) * random.randint(0, 4)
+        env.unwrapped.energy_rew_vec = energy_rew_vec
+        log_dir += f"_energy{int(energy_rew_vec[0])}"
+    if args_cli.gait_rew:
+        gait_rew_vec = torch.ones((env_cfg.scene.num_envs), dtype=torch.float32, device=agent_cfg.device) * random.randint(0, 4)
+        env.unwrapped.gait_rew_vec = gait_rew_vec
+        log_dir += f"_gait{int(gait_rew_vec[0])}"
+    if args_cli.baseh_rew:
+        baseh_rew_vec = torch.ones((env_cfg.scene.num_envs), dtype=torch.float32, device=agent_cfg.device) * random.randint(0, 4)
+        env.unwrapped.baseh_rew_vec = baseh_rew_vec
+        log_dir += f"_baseh{int(baseh_rew_vec[0])}"
+    if args_cli.armsw_rew:
+        armsw_rew_vec = torch.ones((env_cfg.scene.num_envs), dtype=torch.float32, device=agent_cfg.device) * random.randint(0, 4)
+        env.unwrapped.armsw_rew_vec = armsw_rew_vec
+        log_dir += f"_armsw{int(armsw_rew_vec[0])}"
+    if args_cli.armsp_rew:
+        armsp_rew_vec = torch.ones((env_cfg.scene.num_envs), dtype=torch.float32, device=agent_cfg.device) * random.randint(0, 4)
+        env.unwrapped.armsp_rew_vec = armsp_rew_vec
+        log_dir += f"_armsp{int(armsp_rew_vec[0])}"
+    if args_cli.kneelft_rew:
+        kneelft_rew_vec = torch.ones((env_cfg.scene.num_envs), dtype=torch.float32, device=agent_cfg.device) * random.randint(0, 4)
+        env.unwrapped.kneelft_rew_vec = kneelft_rew_vec
+        log_dir += f"_kneelft{int(kneelft_rew_vec[0])}"
 
     # create runner from rsl-rl
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device, multihead=args_cli.use_critic_multi, pcgrad=args_cli.use_pcgrad, gradnorm=args_cli.use_gradnorm, normpres=args_cli.use_normpres, gradvac=args_cli.use_gradvac)

@@ -450,19 +450,38 @@ class PPO:
             # Surrogate loss
             log_ratio = (actions_log_prob_batch - old_actions_log_prob_batch.squeeze()).clamp(-20, 20)
             ratio = log_ratio.exp().unsqueeze(1)
+            if ratio.dim() == 2 and ratio.size(1) == 1:
+                ratio = ratio.squeeze(1)                     # [B]
+            else:
+                ratio = ratio.view(-1)                       # [B]
             clip_fraction = ((ratio < 1.0 - self.clip_param) | (ratio > 1.0 + self.clip_param)).float().mean()
             mean_clip_fraction += clip_fraction.item()
 
             component_advantages_batch = component_advantages_batch  # shape: [B, C]
+            A_total = component_advantages_batch.sum(dim=1)  # [B]
+            eps = self.clip_param
+            # r_eff = min(ratio, 1+eps) if A_total>=0 else max(ratio, 1-eps)
+            r_eff = torch.where(
+                A_total >= 0,
+                torch.minimum(ratio, torch.tensor(1.0 + eps, device=ratio.device)),
+                torch.maximum(ratio, torch.tensor(1.0 - eps, device=ratio.device))
+            )                        
 
-            surrogate_per_component = -component_advantages_batch * ratio  # shape: [B, C]
-            surrogate_per_component_clipped = -component_advantages_batch * torch.clamp(
-                ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
-            )
+            # apply SAME effective ratio to all components
+            component_surrogate_losses = -(r_eff[:, None] * component_advantages_batch)   # [B, C]
+            mean_component_surrogate_loss = component_surrogate_losses.mean(dim=0)        # [C]
 
-            component_surrogate_losses = torch.max(
-                surrogate_per_component, surrogate_per_component_clipped
-            )  # [B, C]
+                        # [B, C]
+            #mean_component_surrogate_loss = comp_losses.mean(dim=0)                     # [C]
+
+            #surrogate_per_component = -component_advantages_batch * ratio  # shape: [B, C]
+            #surrogate_per_component_clipped = -component_advantages_batch * torch.clamp(
+            #    ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
+            #)
+
+            #component_surrogate_losses = torch.max(
+            #    surrogate_per_component, surrogate_per_component_clipped
+            #)  # [B, C]
 
             mean_component_surrogate_loss = component_surrogate_losses.mean(dim=0)  # [C]
             # handles lstm case 
@@ -475,11 +494,15 @@ class PPO:
 
             # Value function loss
             if self.use_clipped_value_loss:
+                scale = returns_batch.std(dim=0,unbiased=False).clamp_min(1e-3)
+                w_k   = (1.0 / (scale**2)).detach() # weight MSE by inverse of variance
+                eps_k = (self.clip_param * scale).detach()
+
                 value_clipped = target_values_batch + (value_batch - target_values_batch).clamp(
-                    -self.clip_param, self.clip_param
+                    -eps_k, eps_k
                 )
-                value_losses = (value_batch - returns_batch).pow(2)
-                value_losses_clipped = (value_clipped - returns_batch).pow(2)
+                value_losses = (value_batch - returns_batch).pow(2) #* w_k
+                value_losses_clipped = (value_clipped - returns_batch).pow(2) #* w_k
                 dim_use = 2 if len(value_losses.shape) > 2 else 1
                 value_loss = torch.max(value_losses.sum(dim=dim_use), value_losses_clipped.sum(dim=dim_use)).mean()
                 component_value_loss = torch.max(value_losses, value_losses_clipped).mean(dim=dim_use-1)  # shape: [C]
@@ -611,7 +634,7 @@ class PPO:
             "grad_overall_conflict_pct": grad_overall_conflict_pct,  # None if not pcgrad/gradvac
             "grad_angle_labels": grad_angle_labels,   # <— NEW
             "grad_angle_pairs": grad_angle_pairs,     # <— optional (indices)
-            "grad_projection_magnitude": (sum((torch.norm(g.detach()) for g in projected_grads)) / len(projected_grads)) if pcgrad or gradvac else None,
+            "grad_projection_magnitude": (sum((torch.norm(g.detach()) for g in projected_grads)) / len(projected_grads)) if pcgrad else None,
             "action_magnitudes": actions_batch.abs().mean(dim=0).detach().cpu(),
         }
     

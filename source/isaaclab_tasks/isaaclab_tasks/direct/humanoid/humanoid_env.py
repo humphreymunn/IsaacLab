@@ -14,7 +14,7 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
-
+from isaaclab.sensors import ContactSensorCfg, RayCasterCfg, patterns
 from isaaclab_tasks.direct.locomotion.locomotion_env import LocomotionEnv
 
 
@@ -86,7 +86,9 @@ class HumanoidEnvCfg(DirectRLEnvCfg):
 
     angular_velocity_scale: float = 0.25
     contact_force_scale: float = 0.01
-
+    contact_sensor: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/.*", history_length=3, update_period=1/240, track_air_time=True
+    )
 
 class HumanoidEnv(LocomotionEnv):
     cfg: HumanoidEnvCfg

@@ -13,7 +13,9 @@ from isaacsim.core.utils.torch.rotations import compute_heading_and_up, compute_
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
+from isaaclab.sensors import ContactSensor, RayCaster
 
+import random
 
 def normalize_angle(x):
     return torch.atan2(torch.sin(x), torch.cos(x))
@@ -44,27 +46,50 @@ class LocomotionEnv(DirectRLEnv):
         self.inv_start_rot = quat_conjugate(self.start_rotation).repeat((self.num_envs, 1))
         self.basis_vec0 = self.heading_vec.clone()
         self.basis_vec1 = self.up_vec.clone()
-        self.reward_components = 16
+        self.reward_components = 7
         self.reward_component_names = [
-            "up_proj",
-            "heading_proj",
-            "vel_loc_x",
-            "vel_loc_y",
-            "angvel_loc_x",
-            "angvel_loc_y",
-            "roll",
-            "pitch",
-            "yaw",
-            "angle_to_target",
-            "dof_pos_scaled",
-            "dof_vel_x",
-            "dof_vel_y",
-            "dof_vel_z",
-            "actions_x",
-            "actions_y",
-            "actions_z",
+            "progress",
+            "alive",
+            "upright",
+            "move_to_target",
+            "action_l2",
+            "energy",
+            "joint_pos_limits",
         ]
-        self.reward_component_task_rew = ["up_proj", "heading_proj", "vel_loc_x", "vel_loc_y", "angvel_loc_x", "angvel_loc_y", "angle_to_target"]
+        self.reward_component_task_rew = ["progress", "alive", "upright", "move_to_target"]
+
+        if self.cfg.energy_rew:
+            self.reward_component_names += ["energy_rew"]
+            self.reward_components += 1
+            self.reward_component_task_rew += ["energy_rew"]
+            self.cfg.energy_cost_scale = 0.
+        if self.cfg.gait_rew:
+            self.reward_component_names += ["gait_rew"]
+            self.reward_components += 1
+            self.reward_component_task_rew += ["gait_rew"]
+        if self.cfg.baseh_rew:
+            self.reward_component_names += ["baseh_rew"]
+            self.reward_components += 1
+            self.reward_component_task_rew += ["baseh_rew"]
+        if self.cfg.armsw_rew:
+            self.reward_component_names += ["armsw_rew"]
+            self.reward_components += 1
+            self.reward_component_task_rew += ["armsw_rew"]
+        if self.cfg.armsp_rew:
+            self.reward_component_names += ["armsp_rew"]
+            self.reward_components += 1
+            self.reward_component_task_rew += ["armsp_rew"]
+        if self.cfg.kneelft_rew:
+            self.reward_component_names += ["kneelft_rew"]
+            self.reward_components += 1
+            self.reward_component_task_rew += ["kneelft_rew"]
+
+        self._feet_ids, _ = self._contact_sensor.find_bodies(".*foot")
+        self._knee_ids, _ = self._contact_sensor.find_bodies(".*shin")
+        self._upper_arm_ids, _ = self._contact_sensor.find_bodies(".*upper_arm")
+        self._pelvis_ids, _ = self._contact_sensor.find_bodies("pelvis")
+        self.feet_positions_prev = torch.ones((self.num_envs, 2, 2), dtype=torch.float32, device=self.sim.device) * 1e8
+        self.max_z_knee = torch.zeros((self.num_envs,2), dtype=torch.float32, device=self.sim.device)
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot)
@@ -79,6 +104,8 @@ class LocomotionEnv(DirectRLEnv):
             self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
         # add articulation to scene
         self.scene.articulations["robot"] = self.robot
+        self._contact_sensor = ContactSensor(self.cfg.contact_sensor)
+        self.scene.sensors["contact_sensor"] = self._contact_sensor        
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
@@ -147,7 +174,8 @@ class LocomotionEnv(DirectRLEnv):
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
-        total_reward = compute_rewards(
+        # base (always-present) reward components
+        base_components = compute_rewards(
             self.actions,
             self.reset_terminated,
             self.cfg.up_weight,
@@ -165,6 +193,107 @@ class LocomotionEnv(DirectRLEnv):
             self.cfg.alive_reward_scale,
             self.motor_effort_ratio,
         )
+
+        electricity_cost = torch.sum(
+                torch.abs(self.actions * self.dof_vel * self.cfg.dof_vel_scale) * self.motor_effort_ratio.unsqueeze(0),
+                dim=-1,
+            )
+        
+
+        first_contact = self._contact_sensor.compute_first_contact(self.step_dt)[:, self._feet_ids]
+        last_air_time = self._contact_sensor.data.last_air_time[:, self._feet_ids]
+        # Collect XY positions of feet with first contact (flattened over envs/feet); boolean mask must be 1D over first two dims
+        feet_xy = self.robot.data.body_pos_w[:, self._feet_ids, :2]              # (num_envs, num_feet, 2)
+        contact_mask = first_contact.to(torch.bool)                              # (num_envs, num_feet)
+        contact_positions = feet_xy[contact_mask]                                # (K, 2) where K = total contacts
+        # initialise
+        self.feet_positions_prev[contact_mask] = torch.where(self.feet_positions_prev[contact_mask] == 1e8, contact_positions, self.feet_positions_prev[contact_mask])
+
+        knee_z = self.robot.data.body_pos_w[:, self._knee_ids, 2] # normal 0.59-0.7
+        
+        upper_arm_xyz = self.robot.data.body_pos_w[:, self._upper_arm_ids, :2]        # (num_envs, num_arms, 2)
+        pelvis_xyz = self.robot.data.body_pos_w[:, self._pelvis_ids, :2]              # (num_envs, 1, 2)
+        # measure distance between each arm and pelvis and sum together (over the arm ids)
+        arm_to_pelvis_dist = torch.norm(upper_arm_xyz - pelvis_xyz, dim=-1)  # (num_envs, num_arms)
+        arm_to_pelvis_sum = arm_to_pelvis_dist.sum(dim=1)                                 # (num_envs,) [0.67-0.92]/2 * 2
+        
+        # measure velocity of the arm
+        upper_arm_velocity = self.robot.data.body_state_w[:,self._upper_arm_ids,7]
+        # measure absolute difference in arm velocity vectors
+        upper_arm_velocity_diff = upper_arm_velocity[:,0] - upper_arm_velocity[:,1] # normal: 1-8 units
+
+        base_height = self.robot.data.body_pos_w[:, self._pelvis_ids, 2] # 0.99 - 1.4 (jumping high)
+        # append optional components (each is (num_envs,) -> (num_envs,1))
+        comp_list = [base_components]
+        if self.cfg.energy_rew:
+            energy_vals_tensor = [[2,4],[5,10],[10,20],[20,40],[40,80]]
+            selected_bounds = energy_vals_tensor[self.energy_rew_vec[0].int()]  # (num_envs, 2)
+            min_energy = selected_bounds[0]
+            max_energy = selected_bounds[1]
+            reward_electricity = ((electricity_cost >= min_energy) & (electricity_cost <= max_energy)).float()
+            comp_list.append(reward_electricity.unsqueeze(-1))
+        if self.cfg.gait_rew:
+            gait_vals_tensor = torch.tensor([0.4,1.0,2.0,4.0,6.0], device=self.sim.device)
+            selected_target = gait_vals_tensor[self.gait_rew_vec.int()]  # (num_envs, 2)
+            gait_sizes = torch.zeros((self.num_envs,2), dtype=torch.float32, device=self.sim.device)
+            gait_sizes[contact_mask] = torch.norm(torch.abs(contact_positions-self.feet_positions_prev[contact_mask]), dim=1) # 0.2-4 => 0.5, 1, 2,4,6
+            # reward neg exp if close to self.gait_rew_vec
+            sigma = (0.25 * selected_target.unsqueeze(-1)).clamp_min(1e-6)
+            diff = gait_sizes - selected_target.unsqueeze(-1)
+            reward_gait = torch.exp(-0.5 * (diff / sigma)**2)
+            reward_gait *= last_air_time # make it fair for different stride times
+            reward_gait *= contact_mask
+            reward_gait = torch.sum(reward_gait, dim=-1) # sum over feet
+            reward_gait *= 2000 # reward coefficient
+            self.feet_positions_prev[contact_mask] = contact_positions  # update only where contact made
+            comp_list.append(reward_gait.unsqueeze(-1))
+        if self.cfg.baseh_rew:
+            baseh_vals_tensor = torch.tensor([0.5,0.65,0.8,0.95,1.1], device=self.sim.device)
+            selected_target = baseh_vals_tensor[self.baseh_rew_vec.int()]  # (num_envs, 2)
+            sigma = (0.5 * selected_target.unsqueeze(-1)).clamp_min(1e-6)
+            diff = base_height - selected_target.unsqueeze(-1)
+            reward_baseh = torch.exp(-0.5 * (diff / sigma)**2)
+            reward_baseh *= 4
+            comp_list.append(reward_baseh)
+        if self.cfg.armsw_rew:
+            armsw_vals_tensor = torch.tensor([0.,4.,8.,12.,16.,20.], device=self.sim.device)
+            selected_target = armsw_vals_tensor[self.armsw_rew_vec.int()]  # (num_envs, 2)
+            sigma_base = 2.0   # tune this to keep reward > 0 when target=0
+            sigma_rel  = 0.5   # relative width w.r.t. target
+            sigma = sigma_base**2 + (sigma_rel * selected_target)**2        # (N, 2)
+            diff = upper_arm_velocity_diff - selected_target
+            reward_armsw = torch.exp(-0.5 * (diff / sigma)**2)
+            reward_armsw *= 1
+            comp_list.append(reward_armsw.unsqueeze(-1))
+        if self.cfg.armsp_rew:
+            armsp_vals_tensor = torch.tensor([0.0,0.2,0.4,0.6,0.8,1.], device=self.sim.device) # 0.4 is "normal"
+            selected_target = armsp_vals_tensor[self.armsp_rew_vec.int()]  # (num_envs, 2)
+            sigma_base = 2.0   # tune this to keep reward > 0 when target=0
+            sigma_rel  = 0.5   # relative width w.r.t. target
+            sigma = sigma_base**2 + (sigma_rel * selected_target)**2        # (N, 2)
+            #print(sigma.shape, selected_target.shape,arm_to_pelvis_dist.shape)
+            diff = torch.sum((arm_to_pelvis_dist - selected_target.unsqueeze(-1)),dim=-1)/2 # average over both arms
+            reward_armsp = torch.exp(-0.5 * (diff / sigma)**2)
+            reward_armsp *= 1
+            comp_list.append(reward_armsp.unsqueeze(-1))
+        if self.cfg.kneelft_rew:
+            self.max_z_knee = torch.maximum(knee_z, self.max_z_knee)
+            # compute max knee reward ...
+            kneelft_vals_tensor = torch.tensor([0.2,0.4,0.6,0.8,1.0], device=self.sim.device) # 0.4 is "normal"
+            selected_target = kneelft_vals_tensor[self.kneelft_rew_vec.int()]
+            sigma_base = 2.0   # tune this to keep reward > 0 when target=0
+            sigma_rel  = 0.5   # relative width w.r.t. target
+            sigma = sigma_base**2 + (sigma_rel * selected_target.unsqueeze(-1))**2        # (N, 2)
+            diff = (self.max_z_knee - selected_target.unsqueeze(-1))
+            reward_kneelft = torch.exp(-0.5 * (diff / sigma)**2)
+            reward_kneelft *= 1
+            reward_kneelft *= contact_mask # only reward on a step
+            reward_kneelft = torch.sum(reward_kneelft, dim=-1) # sum over both knees
+            comp_list.append(reward_kneelft.unsqueeze(-1))
+            # reset
+            self.max_z_knee = torch.where(contact_mask, torch.zeros_like(self.max_z_knee), self.max_z_knee) # reset max knee height if foot in contact
+
+        total_reward = torch.cat(comp_list, dim=-1)
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -194,6 +323,7 @@ class LocomotionEnv(DirectRLEnv):
 
         self._compute_intermediate_values()
 
+        self.feet_positions_prev[env_ids] = torch.ones((len(env_ids), 2, 2), dtype=torch.float32, device=self.sim.device) * 1e8
 
 @torch.jit.script
 def compute_rewards(
@@ -234,18 +364,17 @@ def compute_rewards(
     # reward for duration of staying alive
     alive_reward = torch.ones_like(potentials) * alive_reward_scale
     progress_reward = potentials - prev_potentials
+    
+    total_reward = torch.stack([
+        progress_reward,
+        alive_reward,
+        up_reward,
+        heading_reward,
+        -actions_cost_scale * actions_cost,
+        - energy_cost_scale * electricity_cost,
+        -dof_at_limit_cost
+    ], dim=-1)
 
-    total_reward = (
-        progress_reward
-        + alive_reward
-        + up_reward
-        + heading_reward
-        - actions_cost_scale * actions_cost
-        - energy_cost_scale * electricity_cost
-        - dof_at_limit_cost
-    )
-    # adjust reward for fallen agents
-    total_reward = torch.where(reset_terminated, torch.ones_like(total_reward) * death_cost, total_reward)
     return total_reward
 
 

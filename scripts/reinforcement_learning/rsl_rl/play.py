@@ -32,6 +32,13 @@ parser.add_argument(
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument("--use_critic_multi", action="store_true", default=False)
 parser.add_argument("--architecture", type=str, default=None, help="Architecture of the RL agent. Specified as '56,56' etc. for actor and critic.")
+parser.add_argument("--energy_rew", action="store_true", default=False, help="Use energy reward.")
+parser.add_argument("--gait_rew", action="store_true", default=False, help="Use gait reward.")
+parser.add_argument("--baseh_rew", action="store_true", default=False, help="Use base height reward.")
+parser.add_argument("--armsw_rew", action="store_true", default=False, help="Use step length reward.")
+parser.add_argument("--armsp_rew", action="store_true", default=False, help="Use arm span reward.")
+parser.add_argument("--kneelft_rew", action="store_true", default=False, help="Use knee lift reward.")
+
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -107,6 +114,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     log_dir = os.path.dirname(resume_path)
 
+    if "Humanoid" in args_cli.task:
+        env_cfg.energy_rew = args_cli.energy_rew
+        env_cfg.gait_rew = args_cli.gait_rew
+        env_cfg.baseh_rew = args_cli.baseh_rew
+        env_cfg.armsw_rew = args_cli.armsw_rew
+        env_cfg.armsp_rew = args_cli.armsp_rew
+        env_cfg.kneelft_rew = args_cli.kneelft_rew
+
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
 
@@ -129,6 +144,31 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
+    if args_cli.energy_rew:
+        idx = int(log_dir.split("/")[-1].split("energy")[1].split("_")[0])
+        energy_rew_vec = torch.ones((env_cfg.scene.num_envs), dtype=torch.float32, device=agent_cfg.device) * idx
+        env.unwrapped.energy_rew_vec = energy_rew_vec
+    if args_cli.gait_rew:
+        idx = int(log_dir.split("/")[-1].split("gait")[1].split("_")[0])
+        gait_rew_vec = torch.ones((env_cfg.scene.num_envs), dtype=torch.float32, device=agent_cfg.device) * idx
+        env.unwrapped.gait_rew_vec = gait_rew_vec
+    if args_cli.baseh_rew:
+        idx = int(log_dir.split("/")[-1].split("baseh")[1].split("_")[0])
+        baseh_rew_vec = torch.ones((env_cfg.scene.num_envs), dtype=torch.float32, device=agent_cfg.device) * idx
+        env.unwrapped.baseh_rew_vec = baseh_rew_vec
+    if args_cli.armsw_rew:
+        idx = int(log_dir.split("/")[-1].split("armsw")[1].split("_")[0])
+        armsw_rew_vec = torch.ones((env_cfg.scene.num_envs), dtype=torch.float32, device=agent_cfg.device) * idx
+        env.unwrapped.armsw_rew_vec = armsw_rew_vec
+    if args_cli.armsp_rew:
+        idx = int(log_dir.split("/")[-1].split("armsp")[1].split("_")[0])
+        armsp_rew_vec = torch.ones((env_cfg.scene.num_envs), dtype=torch.float32, device=agent_cfg.device) * idx
+        env.unwrapped.armsp_rew_vec = armsp_rew_vec
+    if args_cli.kneelft_rew:
+        idx = int(log_dir.split("/")[-1].split("kneelft")[1].split("_")[0])
+        kneelft_rew_vec = torch.ones((env_cfg.scene.num_envs), dtype=torch.float32, device=agent_cfg.device) * idx
+        env.unwrapped.kneelft_rew_vec = kneelft_rew_vec
+        
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     # load previously trained model
     ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device, multihead=args_cli.use_critic_multi)
