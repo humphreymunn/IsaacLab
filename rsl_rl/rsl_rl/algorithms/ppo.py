@@ -450,38 +450,38 @@ class PPO:
             # Surrogate loss
             log_ratio = (actions_log_prob_batch - old_actions_log_prob_batch.squeeze()).clamp(-20, 20)
             ratio = log_ratio.exp().unsqueeze(1)
-            if ratio.dim() == 2 and ratio.size(1) == 1:
-                ratio = ratio.squeeze(1)                     # [B]
-            else:
-                ratio = ratio.view(-1)                       # [B]
+            #if ratio.dim() == 2 and ratio.size(1) == 1:
+            #    ratio = ratio.squeeze(1)                     # [B]
+            #else:
+            #    ratio = ratio.view(-1)                       # [B]
             clip_fraction = ((ratio < 1.0 - self.clip_param) | (ratio > 1.0 + self.clip_param)).float().mean()
             mean_clip_fraction += clip_fraction.item()
 
             component_advantages_batch = component_advantages_batch  # shape: [B, C]
-            A_total = component_advantages_batch.sum(dim=1)  # [B]
-            eps = self.clip_param
+            #A_total = component_advantages_batch.sum(dim=1)  # [B]
+            #eps = self.clip_param
             # r_eff = min(ratio, 1+eps) if A_total>=0 else max(ratio, 1-eps)
-            r_eff = torch.where(
-                A_total >= 0,
-                torch.minimum(ratio, torch.tensor(1.0 + eps, device=ratio.device)),
-                torch.maximum(ratio, torch.tensor(1.0 - eps, device=ratio.device))
-            )                        
+            #r_eff = torch.where(
+            #    A_total >= 0,
+            #    torch.minimum(ratio, torch.tensor(1.0 + eps, device=ratio.device)),
+            #    torch.maximum(ratio, torch.tensor(1.0 - eps, device=ratio.device))
+            #)                        
 
             # apply SAME effective ratio to all components
-            component_surrogate_losses = -(r_eff[:, None] * component_advantages_batch)   # [B, C]
-            mean_component_surrogate_loss = component_surrogate_losses.mean(dim=0)        # [C]
+            #component_surrogate_losses = -(r_eff[:, None] * component_advantages_batch)   # [B, C]
+            #mean_component_surrogate_loss = component_surrogate_losses.mean(dim=0)        # [C]
 
                         # [B, C]
             #mean_component_surrogate_loss = comp_losses.mean(dim=0)                     # [C]
 
-            #surrogate_per_component = -component_advantages_batch * ratio  # shape: [B, C]
-            #surrogate_per_component_clipped = -component_advantages_batch * torch.clamp(
-            #    ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
-            #)
+            surrogate_per_component = -component_advantages_batch * ratio  # shape: [B, C]
+            surrogate_per_component_clipped = -component_advantages_batch * torch.clamp(
+                ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
+            )
 
-            #component_surrogate_losses = torch.max(
-            #    surrogate_per_component, surrogate_per_component_clipped
-            #)  # [B, C]
+            component_surrogate_losses = torch.max(
+                surrogate_per_component, surrogate_per_component_clipped
+            )  # [B, C]
 
             mean_component_surrogate_loss = component_surrogate_losses.mean(dim=0)  # [C]
             # handles lstm case 

@@ -33,12 +33,12 @@ parser.add_argument("--use_normpres", action="store_true", default=False, help="
 parser.add_argument("--use_gradvac", action="store_true", default=False, help="Use GradVac for multi-head training.")
 parser.add_argument("--entropy_coef", type=float, default=None, help="Entropy coefficient for the PPO algorithm.")
 parser.add_argument("--architecture", type=str, default=None, help="Architecture of the RL agent. Specified as '56,56' etc. for actor and critic.")
-parser.add_argument("--energy_rew", action="store_true", default=False, help="Use energy reward.")
-parser.add_argument("--gait_rew", action="store_true", default=False, help="Use gait reward.")
-parser.add_argument("--baseh_rew", action="store_true", default=False, help="Use base height reward.")
-parser.add_argument("--armsw_rew", action="store_true", default=False, help="Use step length reward.")
-parser.add_argument("--armsp_rew", action="store_true", default=False, help="Use arm span reward.")
-parser.add_argument("--kneelft_rew", action="store_true", default=False, help="Use knee lift reward.")
+parser.add_argument("--energy_rew", type=int, default=-1, help="Use energy reward.")
+parser.add_argument("--gait_rew", type=int, default=-1, help="Use gait reward.")
+parser.add_argument("--baseh_rew", type=int, default=-1, help="Use base height reward.")
+parser.add_argument("--armsw_rew", type=int, default=-1, help="Use step length reward.")
+parser.add_argument("--armsp_rew", type=int, default=-1, help="Use arm span reward.")
+parser.add_argument("--kneelft_rew", type=int, default=-1, help="Use knee lift reward.")
 
 parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
@@ -198,12 +198,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     log_dir += f"_{args_cli.seed}" if args_cli.seed is not None else ""
     
     if "Humanoid" in args_cli.task:
-        env_cfg.energy_rew = args_cli.energy_rew
-        env_cfg.gait_rew = args_cli.gait_rew
-        env_cfg.baseh_rew = args_cli.baseh_rew
-        env_cfg.armsw_rew = args_cli.armsw_rew
-        env_cfg.armsp_rew = args_cli.armsp_rew
-        env_cfg.kneelft_rew = args_cli.kneelft_rew
+        env_cfg.energy_rew = args_cli.energy_rew != -1
+        env_cfg.gait_rew = args_cli.gait_rew != -1
+        env_cfg.baseh_rew = args_cli.baseh_rew != -1
+        env_cfg.armsw_rew = args_cli.armsw_rew != -1
+        env_cfg.armsp_rew = args_cli.armsp_rew != -1
+        env_cfg.kneelft_rew = args_cli.kneelft_rew != -1
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
@@ -232,28 +232,28 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
-    if args_cli.energy_rew:
-        energy_rew_vec = torch.ones((env_cfg.scene.num_envs), dtype=torch.float32, device=agent_cfg.device) * random.randint(0, 4)
+    if args_cli.energy_rew != -1:
+        energy_rew_vec = torch.ones((env_cfg.scene.num_envs), dtype=torch.float32, device=agent_cfg.device) * args_cli.energy_rew
         env.unwrapped.energy_rew_vec = energy_rew_vec
         log_dir += f"_energy{int(energy_rew_vec[0])}"
-    if args_cli.gait_rew:
-        gait_rew_vec = torch.ones((env_cfg.scene.num_envs), dtype=torch.float32, device=agent_cfg.device) * random.randint(0, 4)
+    if args_cli.gait_rew != -1:
+        gait_rew_vec = torch.ones((env_cfg.scene.num_envs), dtype=torch.float32, device=agent_cfg.device) * args_cli.gait_rew
         env.unwrapped.gait_rew_vec = gait_rew_vec
         log_dir += f"_gait{int(gait_rew_vec[0])}"
-    if args_cli.baseh_rew:
-        baseh_rew_vec = torch.ones((env_cfg.scene.num_envs), dtype=torch.float32, device=agent_cfg.device) * random.randint(0, 4)
+    if args_cli.baseh_rew != -1:
+        baseh_rew_vec = torch.ones((env_cfg.scene.num_envs), dtype=torch.float32, device=agent_cfg.device) * args_cli.baseh_rew
         env.unwrapped.baseh_rew_vec = baseh_rew_vec
         log_dir += f"_baseh{int(baseh_rew_vec[0])}"
-    if args_cli.armsw_rew:
-        armsw_rew_vec = torch.ones((env_cfg.scene.num_envs), dtype=torch.float32, device=agent_cfg.device) * random.randint(0, 4)
+    if args_cli.armsw_rew != -1:
+        armsw_rew_vec = torch.ones((env_cfg.scene.num_envs), dtype=torch.float32, device=agent_cfg.device) * args_cli.armsw_rew
         env.unwrapped.armsw_rew_vec = armsw_rew_vec
         log_dir += f"_armsw{int(armsw_rew_vec[0])}"
-    if args_cli.armsp_rew:
-        armsp_rew_vec = torch.ones((env_cfg.scene.num_envs), dtype=torch.float32, device=agent_cfg.device) * random.randint(0, 4)
+    if args_cli.armsp_rew != -1:
+        armsp_rew_vec = torch.ones((env_cfg.scene.num_envs), dtype=torch.float32, device=agent_cfg.device) * args_cli.armsp_rew
         env.unwrapped.armsp_rew_vec = armsp_rew_vec
         log_dir += f"_armsp{int(armsp_rew_vec[0])}"
-    if args_cli.kneelft_rew:
-        kneelft_rew_vec = torch.ones((env_cfg.scene.num_envs), dtype=torch.float32, device=agent_cfg.device) * random.randint(0, 4)
+    if args_cli.kneelft_rew != -1:
+        kneelft_rew_vec = torch.ones((env_cfg.scene.num_envs), dtype=torch.float32, device=agent_cfg.device) * args_cli.kneelft_rew
         env.unwrapped.kneelft_rew_vec = kneelft_rew_vec
         log_dir += f"_kneelft{int(kneelft_rew_vec[0])}"
 

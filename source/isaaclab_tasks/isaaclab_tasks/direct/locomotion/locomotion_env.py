@@ -210,9 +210,10 @@ class LocomotionEnv(DirectRLEnv):
         self.feet_positions_prev[contact_mask] = torch.where(self.feet_positions_prev[contact_mask] == 1e8, contact_positions, self.feet_positions_prev[contact_mask])
 
         knee_z = self.robot.data.body_pos_w[:, self._knee_ids, 2] # normal 0.59-0.7
-        
-        upper_arm_xyz = self.robot.data.body_pos_w[:, self._upper_arm_ids, :2]        # (num_envs, num_arms, 2)
-        pelvis_xyz = self.robot.data.body_pos_w[:, self._pelvis_ids, :2]              # (num_envs, 1, 2)
+        knee_z -= self.robot.data.body_pos_w[:, self._pelvis_ids, 2] # wrt torso 
+
+        upper_arm_xyz = self.robot.data.body_pos_w[:, self._upper_arm_ids, :3]        # (num_envs, num_arms, 3)
+        pelvis_xyz = self.robot.data.body_pos_w[:, self._pelvis_ids, :3]              # (num_envs, 1, 3)
         # measure distance between each arm and pelvis and sum together (over the arm ids)
         arm_to_pelvis_dist = torch.norm(upper_arm_xyz - pelvis_xyz, dim=-1)  # (num_envs, num_arms)
         arm_to_pelvis_sum = arm_to_pelvis_dist.sum(dim=1)                                 # (num_envs,) [0.67-0.92]/2 * 2
@@ -225,74 +226,106 @@ class LocomotionEnv(DirectRLEnv):
         base_height = self.robot.data.body_pos_w[:, self._pelvis_ids, 2] # 0.99 - 1.4 (jumping high)
         # append optional components (each is (num_envs,) -> (num_envs,1))
         comp_list = [base_components]
+        if "log" not in self.extras:
+            self.extras["log"] = dict()
+        #for idx, rew in enumerate(self.reward_component_names[:base_components.shape[1]]):
+        #    self.extras["log"][f"Episode_Reward/{rew}"] = base_components[:,idx].mean().item()*self.num_envs
+
         if self.cfg.energy_rew:
             energy_vals_tensor = [[2,4],[5,10],[10,20],[20,40],[40,80]]
             selected_bounds = energy_vals_tensor[self.energy_rew_vec[0].int()]  # (num_envs, 2)
             min_energy = selected_bounds[0]
             max_energy = selected_bounds[1]
             reward_electricity = ((electricity_cost >= min_energy) & (electricity_cost <= max_energy)).float()
-            comp_list.append(reward_electricity.unsqueeze(-1))
+            reward_electricity *= 5
+            comp_list.append(reward_electricity.unsqueeze(-1))                            
+            within  = (electricity_cost >= min_energy) & (electricity_cost <= max_energy)
+            den = torch.ones_like(within).sum()                        # total valid feet this step
+            pct = 100.0 * within.float().sum() / den                      # scalar %
+            self.extras["log"]["energy_success_pct"] = pct
+        #     self.extras["log"]["Episode_Reward/energy_rew"] = reward_electricity.mean().item()*self.num_envs
+
         if self.cfg.gait_rew:
-            gait_vals_tensor = torch.tensor([0.4,1.0,2.0,4.0,6.0], device=self.sim.device)
-            selected_target = gait_vals_tensor[self.gait_rew_vec.int()]  # (num_envs, 2)
+            gait_vals_tensor = [[0,0.25],[0.25,0.5],[0.5,1.0],[1.0,1.5],[1.5,2.0]]
+            selected_bounds = gait_vals_tensor[self.gait_rew_vec[0].int()]  # (num_envs, 2)
             gait_sizes = torch.zeros((self.num_envs,2), dtype=torch.float32, device=self.sim.device)
             gait_sizes[contact_mask] = torch.norm(torch.abs(contact_positions-self.feet_positions_prev[contact_mask]), dim=1) # 0.2-4 => 0.5, 1, 2,4,6
-            # reward neg exp if close to self.gait_rew_vec
-            sigma = (0.25 * selected_target.unsqueeze(-1)).clamp_min(1e-6)
-            diff = gait_sizes - selected_target.unsqueeze(-1)
-            reward_gait = torch.exp(-0.5 * (diff / sigma)**2)
+            min_value, max_value = selected_bounds[0], selected_bounds[1]
+            reward_gait = ((gait_sizes >= min_value) & (gait_sizes <= max_value)).float()
             reward_gait *= last_air_time # make it fair for different stride times
             reward_gait *= contact_mask
             reward_gait = torch.sum(reward_gait, dim=-1) # sum over feet
-            reward_gait *= 2000 # reward coefficient
+            reward_gait *= 250
             self.feet_positions_prev[contact_mask] = contact_positions  # update only where contact made
             comp_list.append(reward_gait.unsqueeze(-1))
+            valid   = contact_mask.bool()                                  # only count feet in contact
+            within  = (gait_sizes >= min_value) & (gait_sizes <= max_value)
+            success = within & valid
+            den = valid.float().sum().clamp(min=1)                         # total valid feet this step
+            pct = 100.0 * success.float().sum() / den                      # scalar %
+            self.extras["log"]["gait_success_pct"] = pct
+            #self.extras["log"]["Episode_Reward/gait_rew"] = reward_gait.mean().item()*self.num_envs
+
         if self.cfg.baseh_rew:
-            baseh_vals_tensor = torch.tensor([0.5,0.65,0.8,0.95,1.1], device=self.sim.device)
-            selected_target = baseh_vals_tensor[self.baseh_rew_vec.int()]  # (num_envs, 2)
-            sigma = (0.5 * selected_target.unsqueeze(-1)).clamp_min(1e-6)
-            diff = base_height - selected_target.unsqueeze(-1)
-            reward_baseh = torch.exp(-0.5 * (diff / sigma)**2)
-            reward_baseh *= 4
-            comp_list.append(reward_baseh)
+            bounds_list = [[0.,0.6],[0.5,0.8],[0.7,1.],[0.9,1.2],[1,1.4]]
+            selected_bounds = bounds_list[self.baseh_rew_vec[0].int()]  # (num_envs, 2)
+            min_value, max_value = selected_bounds[0], selected_bounds[1]
+            reward_term = ((base_height >= min_value) & (base_height <= max_value)).float()
+            reward_term *= 5
+            comp_list.append(reward_term)
+            within  = (base_height >= min_value) & (base_height <= max_value)
+            den = torch.ones_like(within).sum()                        # total valid feet this step
+            pct = 100.0 * within.float().sum() / den                      # scalar %
+            self.extras["log"]["base_height_success_pct"] = pct
+            #self.extras["log"]["Episode_Reward/baseh_rew"] = reward_term.mean().item()*self.num_envs
+
         if self.cfg.armsw_rew:
-            armsw_vals_tensor = torch.tensor([0.,4.,8.,12.,16.,20.], device=self.sim.device)
-            selected_target = armsw_vals_tensor[self.armsw_rew_vec.int()]  # (num_envs, 2)
-            sigma_base = 2.0   # tune this to keep reward > 0 when target=0
-            sigma_rel  = 0.5   # relative width w.r.t. target
-            sigma = sigma_base**2 + (sigma_rel * selected_target)**2        # (N, 2)
-            diff = upper_arm_velocity_diff - selected_target
-            reward_armsw = torch.exp(-0.5 * (diff / sigma)**2)
-            reward_armsw *= 1
-            comp_list.append(reward_armsw.unsqueeze(-1))
+            bounds_list = [[0.,2],[4,6],[8,10],[12,14],[16,18],[20,22]]
+            selected_bounds = bounds_list[self.armsw_rew_vec[0].int()]  # (num_envs, 2)
+            min_value, max_value = selected_bounds[0], selected_bounds[1]
+            reward_term = ((upper_arm_velocity_diff >= min_value) & (upper_arm_velocity_diff <= max_value)).float()
+            reward_term *= 20
+            comp_list.append(reward_term.unsqueeze(-1))
+            within  = (upper_arm_velocity_diff >= min_value) & (upper_arm_velocity_diff <= max_value)
+            den = torch.ones_like(within).sum()                        # total valid feet this step
+            pct = 100.0 * within.float().sum() / den                      # scalar %
+            self.extras["log"]["arm_swing_success_pct"] = pct
+            #self.extras["log"]["Episode_Reward/armsw_rew"] = reward_term.mean().item()*self.num_envs
+
         if self.cfg.armsp_rew:
-            armsp_vals_tensor = torch.tensor([0.0,0.2,0.4,0.6,0.8,1.], device=self.sim.device) # 0.4 is "normal"
-            selected_target = armsp_vals_tensor[self.armsp_rew_vec.int()]  # (num_envs, 2)
-            sigma_base = 2.0   # tune this to keep reward > 0 when target=0
-            sigma_rel  = 0.5   # relative width w.r.t. target
-            sigma = sigma_base**2 + (sigma_rel * selected_target)**2        # (N, 2)
-            #print(sigma.shape, selected_target.shape,arm_to_pelvis_dist.shape)
-            diff = torch.sum((arm_to_pelvis_dist - selected_target.unsqueeze(-1)),dim=-1)/2 # average over both arms
-            reward_armsp = torch.exp(-0.5 * (diff / sigma)**2)
-            reward_armsp *= 1
-            comp_list.append(reward_armsp.unsqueeze(-1))
+            bounds_list = [[0.,0.1],[0.2,0.3],[0.4,0.5],[0.6,0.7],[0.8,0.9],[1.0,1.1]]
+            selected_bounds = bounds_list[self.armsp_rew_vec[0].int()]  # (num_envs, 2)
+            min_value, max_value = selected_bounds[0], selected_bounds[1]
+            reward_term = ((arm_to_pelvis_dist >= min_value) & (arm_to_pelvis_dist <= max_value)).float().mean(dim=-1)
+            reward_term *= 5
+            comp_list.append(reward_term.unsqueeze(-1))
+            within  = (arm_to_pelvis_dist >= min_value) & (arm_to_pelvis_dist <= max_value)
+            den = torch.ones_like(within).sum()                        # total valid feet this step
+            pct = 100.0 * within.float().sum() / den                      # scalar %
+            self.extras["log"]["arm_span_success_pct"] = pct
+            #self.extras["log"]["Episode_Reward/armsp_rew"] = reward_term.mean().item()*self.num_envs
+
         if self.cfg.kneelft_rew:
             self.max_z_knee = torch.maximum(knee_z, self.max_z_knee)
-            # compute max knee reward ...
-            kneelft_vals_tensor = torch.tensor([0.2,0.4,0.6,0.8,1.0], device=self.sim.device) # 0.4 is "normal"
-            selected_target = kneelft_vals_tensor[self.kneelft_rew_vec.int()]
-            sigma_base = 2.0   # tune this to keep reward > 0 when target=0
-            sigma_rel  = 0.5   # relative width w.r.t. target
-            sigma = sigma_base**2 + (sigma_rel * selected_target.unsqueeze(-1))**2        # (N, 2)
-            diff = (self.max_z_knee - selected_target.unsqueeze(-1))
-            reward_kneelft = torch.exp(-0.5 * (diff / sigma)**2)
-            reward_kneelft *= 1
-            reward_kneelft *= contact_mask # only reward on a step
-            reward_kneelft = torch.sum(reward_kneelft, dim=-1) # sum over both knees
-            comp_list.append(reward_kneelft.unsqueeze(-1))
+            # compute max knee reward
+            bounds_list = [[-0.35,-0.25],[-0.25,-0.15],[-0.15,0.],[0,0.15],[0.15,0.25],[0.25,0.35]]
+            selected_bounds = bounds_list[self.kneelft_rew_vec[0].int()]  # (num_envs, 2)
+            min_value, max_value = selected_bounds[0], selected_bounds[1]
+            reward_term = ((self.max_z_knee >= min_value) & (self.max_z_knee <= max_value)).float()
+            reward_term *= 20000
+            reward_term *= last_air_time
+            reward_term *= contact_mask
+            reward_term = torch.sum(reward_term, dim=-1) # sum over both knees
+            comp_list.append(reward_term.unsqueeze(-1))
+            valid   = contact_mask.bool()                                  # only count feet in contact
+            within  = (self.max_z_knee >= min_value) & (self.max_z_knee <= max_value)
+            success = within & valid
+            den = valid.float().sum().clamp(min=1)                         # total valid feet this step
+            pct = 100.0 * success.float().sum() / den                      # scalar %
+            self.extras["log"]["knee_height_success_pct"] = pct
+            #self.extras["log"]["Episode_Reward/kneelft_rew"] = reward_term.mean().item()*self.num_envs
             # reset
             self.max_z_knee = torch.where(contact_mask, torch.zeros_like(self.max_z_knee), self.max_z_knee) # reset max knee height if foot in contact
-
         total_reward = torch.cat(comp_list, dim=-1)
         return total_reward
 
