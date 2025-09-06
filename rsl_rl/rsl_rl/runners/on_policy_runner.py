@@ -134,7 +134,10 @@ class OnPolicyRunner:
         ep_infos = []
         rewbuffer = deque(maxlen=100)
         lenbuffer = deque(maxlen=100)
-        cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
+        try:
+            cur_reward_sum = torch.zeros((self.env.num_envs, self.env.unwrapped.reward_components), dtype=torch.float, device=self.device)
+        except AttributeError:
+            cur_reward_sum = torch.zeros((self.env.num_envs, self.env.unwrapped.cfg.reward_components), dtype=torch.float, device=self.device)
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
 
         start_iter = self.current_learning_iteration
@@ -149,6 +152,7 @@ class OnPolicyRunner:
                     #constraints_nonzero = constraints[torch.nonzero(constraints,as_tuple=True)]
                     actions = self.alg.act(obs, critic_obs)
                     obs, rewards, dones, infos = self.env.step(actions)
+                    prev_rewards = rewards
                     rewards = rewards.sum(dim=1, keepdim=True)  # sum rewards across components
                     obs = self.obs_normalizer(obs)
                     if "critic" in infos["observations"]:
@@ -171,7 +175,7 @@ class OnPolicyRunner:
                             ep_infos.append(infos["episode"])
                         elif "log" in infos:
                             ep_infos.append(infos["log"])
-                        cur_reward_sum += torch.sum(rewards, dim=0)
+                        cur_reward_sum += torch.sum(prev_rewards, dim=0)
                         cur_episode_length += 1
                         new_ids = (dones > 0).nonzero(as_tuple=False)
                         rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
@@ -433,13 +437,13 @@ class OnPolicyRunner:
         self.writer.add_scalar("Perf/collection time", locs["collection_time"], locs["it"])
         self.writer.add_scalar("Perf/learning_time", locs["learn_time"], locs["it"])
         if len(locs["rewbuffer"]) > 0:
-            if self.reward_components > 1:
+            if True:#self.reward_components > 1:
                 self.writer.add_scalar("Train/mean_reward", statistics.mean(deque([sum(row) for row in locs["rewbuffer"]], maxlen=locs["rewbuffer"].maxlen)), locs["it"])
             else:
                 self.writer.add_scalar("Train/mean_reward", statistics.mean(locs["rewbuffer"]), locs["it"])           
             self.writer.add_scalar("Train/mean_episode_length", statistics.mean(locs["lenbuffer"]), locs["it"])
             if self.logger_type != "wandb":  # wandb does not support non-integer x-axis logging
-                if self.reward_components > 1:
+                if True:#self.reward_components > 1:
                     self.writer.add_scalar("Train/mean_reward/time", statistics.mean(deque([sum(row) for row in locs["rewbuffer"]], maxlen=locs["rewbuffer"].maxlen)), self.tot_time)
                 else:
                     self.writer.add_scalar("Train/mean_reward/time", statistics.mean(locs["rewbuffer"]), self.tot_time)
@@ -447,7 +451,7 @@ class OnPolicyRunner:
                     "Train/mean_episode_length/time", statistics.mean(locs["lenbuffer"]), self.tot_time
                 )
             #print(locs["rewbuffer"])
-            if self.reward_components > 1:
+            if True:#self.reward_components > 1:
                 rew_tensor = torch.stack([torch.tensor(x, device=self.device) for x in locs["rewbuffer"]])
                 mean_rew = rew_tensor.mean(dim=0)  # shape: [7]
 
@@ -458,7 +462,7 @@ class OnPolicyRunner:
         str = f" \033[1m Learning iteration {locs['it']}/{locs['tot_iter']} \033[0m "
 
         if len(locs["rewbuffer"]) > 0:
-            if self.reward_components > 1:
+            if True:#self.reward_components > 1:
                 log_string = (
                     f"""{'#' * width}\n"""
                     f"""{str.center(width, ' ')}\n\n"""
@@ -467,7 +471,7 @@ class OnPolicyRunner:
                     f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
                     f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n"""
                     f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
-                    f"""{'Mean reward:':>{pad}} {statistics.mean(deque([sum(row) for row in locs["rewbuffer"]], maxlen=locs["rewbuffer"].maxlen)):.2f}\n""" if self.reward_components > 1 else f"""{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
+                    f"""{'Mean reward:':>{pad}} {statistics.mean(deque([sum(row) for row in locs["rewbuffer"]], maxlen=locs["rewbuffer"].maxlen)):.2f}\n""" if True else f"""{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
                     f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n"""
                 )
             else:
