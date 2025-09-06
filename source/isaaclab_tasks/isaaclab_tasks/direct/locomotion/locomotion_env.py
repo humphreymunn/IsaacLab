@@ -14,7 +14,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.sensors import ContactSensor, RayCaster
-
+import torch.nn.functional as F
 import random
 
 def normalize_angle(x):
@@ -90,6 +90,13 @@ class LocomotionEnv(DirectRLEnv):
         self._pelvis_ids, _ = self._contact_sensor.find_bodies("pelvis")
         self.feet_positions_prev = torch.ones((self.num_envs, 2, 2), dtype=torch.float32, device=self.sim.device) * 1e8
         self.max_z_knee = torch.zeros((self.num_envs,2), dtype=torch.float32, device=self.sim.device)
+        if self.cfg.diayn: # latent variable
+            self.z_div = torch.zeros((self.num_envs,1),device=self.device, dtype=torch.float32)
+            self.descrim_func = None
+            self.num_skills = None
+            self.reward_component_names += ["diayn_rew"]
+            self.reward_components += 1
+            self.reward_component_task_rew += ["diayn_rew"]
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot)
@@ -170,6 +177,7 @@ class LocomotionEnv(DirectRLEnv):
             ),
             dim=-1,
         )
+        obs = torch.cat( (obs, self.z_div), dim=-1 ) if self.cfg.diayn else obs
         observations = {"policy": obs}
         return observations
 
@@ -193,7 +201,6 @@ class LocomotionEnv(DirectRLEnv):
             self.cfg.alive_reward_scale,
             self.motor_effort_ratio,
         )
-
         electricity_cost = torch.sum(
                 torch.abs(self.actions * self.dof_vel * self.cfg.dof_vel_scale) * self.motor_effort_ratio.unsqueeze(0),
                 dim=-1,
@@ -326,6 +333,20 @@ class LocomotionEnv(DirectRLEnv):
             #self.extras["log"]["Episode_Reward/kneelft_rew"] = reward_term.mean().item()*self.num_envs
             # reset
             self.max_z_knee = torch.where(contact_mask, torch.zeros_like(self.max_z_knee), self.max_z_knee) # reset max knee height if foot in contact
+        if self.cfg.diayn:
+            # discriminator reward
+            if hasattr(self, 'obs_buf') and self.discrim_func is not None:
+                discrim_batch = self.discrim_func(self.obs_buf["policy"][:,:-1])
+                true_skills = self.z_div
+                discrim_loss = F.cross_entropy(discrim_batch, true_skills.long().squeeze(), reduction='none')
+            else:
+                discrim_loss = torch.ones((self.num_envs), device=self.device)*torch.log(torch.tensor(self.num_skills, device=self.device))
+            reward_term = torch.clamp((torch.log(torch.tensor(self.num_skills, device=self.device)) - discrim_loss)/self.max_episode_length, min=0.0, max=1.0) * 2e4
+            comp_list.append(reward_term.unsqueeze(-1))
+            self.extras["log"]["diayn_rew"] = reward_term.mean().item()
+
+            #print(discrim_loss.mean().item())
+
         total_reward = torch.cat(comp_list, dim=-1)
         return total_reward
 
@@ -357,6 +378,8 @@ class LocomotionEnv(DirectRLEnv):
         self._compute_intermediate_values()
 
         self.feet_positions_prev[env_ids] = torch.ones((len(env_ids), 2, 2), dtype=torch.float32, device=self.sim.device) * 1e8
+        if self.cfg.diayn and self.num_skills is not None: # latent variable
+            self.z_div[env_ids] = torch.randint(0,self.num_skills, (len(env_ids),1),device=self.device, dtype=torch.float32)
 
 @torch.jit.script
 def compute_rewards(

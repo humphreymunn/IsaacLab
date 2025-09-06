@@ -39,6 +39,7 @@ parser.add_argument("--baseh_rew", type=int, default=-1, help="Use base height r
 parser.add_argument("--armsw_rew", type=int, default=-1, help="Use step length reward.")
 parser.add_argument("--armsp_rew", type=int, default=-1, help="Use arm span reward.")
 parser.add_argument("--kneelft_rew", type=int, default=-1, help="Use knee lift reward.")
+parser.add_argument("--diayn", action="store_true", default=False, help="Use DIAYN.")
 
 parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
@@ -193,6 +194,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     log_dir += f"_gradnorm" if args_cli.use_gradnorm else ""
     log_dir += f"_normpres" if args_cli.use_normpres else ""
     log_dir += f"_gradvac" if args_cli.use_gradvac else ""
+    log_dir += f"_diayn" if args_cli.diayn else ""
     log_dir += f"_{args_cli.entropy_coef}" if args_cli.entropy_coef is not None else ""
     log_dir += f"_{args_cli.architecture}" if args_cli.architecture is not None else ""
     log_dir += f"_{args_cli.seed}" if args_cli.seed is not None else ""
@@ -204,6 +206,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env_cfg.armsw_rew = args_cli.armsw_rew != -1
         env_cfg.armsp_rew = args_cli.armsp_rew != -1
         env_cfg.kneelft_rew = args_cli.kneelft_rew != -1
+    env_cfg.diayn = args_cli.diayn
+
+    if isinstance(env_cfg, ManagerBasedRLEnvCfg) and env_cfg.diayn:
+        env_cfg.reward_components += 1
+        env_cfg.reward_component_names.append("diayn_rew")
+        env_cfg.reward_component_task_rew.append("diayn_rew")
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
@@ -258,7 +266,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         log_dir += f"_kneelft{int(kneelft_rew_vec[0])}"
 
     # create runner from rsl-rl
-    runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device, multihead=args_cli.use_critic_multi, pcgrad=args_cli.use_pcgrad, gradnorm=args_cli.use_gradnorm, normpres=args_cli.use_normpres, gradvac=args_cli.use_gradvac)
+    runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device, multihead=args_cli.use_critic_multi, pcgrad=args_cli.use_pcgrad, gradnorm=args_cli.use_gradnorm, normpres=args_cli.use_normpres, gradvac=args_cli.use_gradvac, diayn=args_cli.diayn)
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
     # load the checkpoint

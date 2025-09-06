@@ -528,6 +528,12 @@ class DirectRLEnv(gym.Env):
                 self._debug_vis_handle = None
         # return success
         return True
+    
+    def update_discrim(self, discrim_func):
+        self.discrim_func = discrim_func
+
+    def update_num_skills(self, num_skills):
+        self.num_skills = num_skills
 
     """
     Helper functions.

@@ -22,6 +22,8 @@ class ActorCritic(nn.Module):
         critic_hidden_dims=[256, 256, 256],
         activation="elu",
         init_noise_std=1.0,
+        num_discrim_obs = None,
+        num_skills = None,
         **kwargs,
     ):
         if kwargs:
@@ -62,6 +64,24 @@ class ActorCritic(nn.Module):
 
         print(f"Actor MLP: {self.actor}")
         print(f"Critic MLP: {self.critic}")
+
+        if num_skills is not None and num_discrim_obs is not None:
+            mlp_input_dim_d = num_discrim_obs # w/o recurrent
+            # discriminator output is softmaxed
+            discriminator_layers = []
+            discriminator_layers.append(nn.Linear(mlp_input_dim_d, critic_hidden_dims[0]))
+            discriminator_layers.append(activation)
+            for layer_index in range(len(critic_hidden_dims)):
+                if layer_index == len(critic_hidden_dims) - 1:
+                    discriminator_layers.append(nn.Linear(critic_hidden_dims[layer_index], num_skills))
+                    # apply softmax
+                    #discriminator_layers.append(nn.Softmax(dim=-1))
+                else:
+                    discriminator_layers.append(nn.Linear(critic_hidden_dims[layer_index], critic_hidden_dims[layer_index + 1]))
+                    discriminator_layers.append(activation)
+            self.discriminator = nn.Sequential(*discriminator_layers)
+
+            print(f"Discriminator MLP: {self.discriminator}")
 
         # Action noise
         self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
@@ -118,6 +138,9 @@ class ActorCritic(nn.Module):
     def evaluate(self, critic_observations, **kwargs):
         values = self.critic(critic_observations)
         return values
+
+    def discriminate(self, critic_observations):
+        return self.discriminator(critic_observations)
 
 
 def get_activation(act_name):

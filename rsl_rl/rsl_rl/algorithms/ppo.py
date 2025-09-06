@@ -558,7 +558,9 @@ class PPO:
                 if self.entropy_coef > 0:
                     (-self.entropy_coef * entropy_batch.mean()).backward()
 
-            nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
+            # don't clip discriminator gradients
+            actor_critic_params = list(self.actor_critic.actor.parameters()) + list(self.actor_critic.critic.parameters())
+            nn.utils.clip_grad_norm_(actor_critic_params, self.max_grad_norm)
             self.optimizer.step()
 
             mean_value_loss += value_loss.item()
@@ -733,7 +735,8 @@ class PPO:
             self.optimizer.zero_grad()
             loss.backward()
 
-            nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
+            actor_critic_params = list(self.actor_critic.actor.parameters()) + list(self.actor_critic.critic.parameters())
+            nn.utils.clip_grad_norm_(actor_critic_params, self.max_grad_norm)
             self.optimizer.step()
 
 

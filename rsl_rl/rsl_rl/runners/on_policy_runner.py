@@ -22,7 +22,7 @@ class OnPolicyRunner:
     """On-policy runner for training and evaluation."""
 
     def __init__(self, env: VecEnv, train_cfg, log_dir=None, device="cpu", \
-                 rnn_num_layers=None, rnn_hidden_size=None, concatenate_rnn_with_input=None, untrained=None, multihead=False, pcgrad=False, gradnorm=False, normpres=False, gradvac=False):
+                 rnn_num_layers=None, rnn_hidden_size=None, concatenate_rnn_with_input=None, untrained=None, multihead=False, pcgrad=False, gradnorm=False, normpres=False, gradvac=False, diayn=False):
         self.cfg = train_cfg
         self.alg_cfg = train_cfg["algorithm"]
         self.policy_cfg = train_cfg["policy"]
@@ -34,6 +34,8 @@ class OnPolicyRunner:
             num_critic_obs = extras["observations"]["critic"].shape[1]
         else:
             num_critic_obs = num_obs
+        num_discrim_obs = num_obs - 1 if diayn else None
+        self.num_skills = 3 if diayn else None
         actor_critic_class = eval(self.policy_cfg.pop("class_name"))  # ActorCritic
         
         #Initialize rnn_params as an empty dictionary
@@ -64,7 +66,8 @@ class OnPolicyRunner:
                 self.reward_component_task_rew = None
 
         self.actor_critic: ActorCritic | ActorCriticRecurrent = actor_critic_class(
-            num_obs, num_critic_obs, self.env.num_actions, self.reward_components, **self.policy_cfg, **rnn_params
+            num_obs, num_critic_obs, self.env.num_actions, self.reward_components, \
+                 **self.policy_cfg, **rnn_params, num_discrim_obs=num_discrim_obs, num_skills=self.num_skills
         ).to(self.device)
         alg_class = eval(self.alg_cfg.pop("class_name"))  # PPO
         self.alg: PPO = alg_class(self.actor_critic, device=self.device, **self.alg_cfg, gradnorm=gradnorm, reward_component_names=self.reward_component_names,reward_component_task_rew=self.reward_component_task_rew)
@@ -99,6 +102,11 @@ class OnPolicyRunner:
         self.gradnorm = gradnorm
         self.normpres = normpres
         self.gradvac = gradvac
+        if diayn:
+            self.env.unwrapped.update_discrim(self.actor_critic.discriminate)
+            self.env.unwrapped.update_num_skills(self.num_skills)
+            self.ema_ext_mag   = 0.0
+            self.ema_div_mag   = 0.0
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):
         # initialize writer
@@ -146,12 +154,23 @@ class OnPolicyRunner:
 
         for it in range(start_iter, tot_iter):
             start = time.time()
+            diayn_scale = None
             # Rollout
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
                     #constraints_nonzero = constraints[torch.nonzero(constraints,as_tuple=True)]
                     actions = self.alg.act(obs, critic_obs)
                     obs, rewards, dones, infos = self.env.step(actions)
+                    if self.num_skills is not None:
+                        if diayn_scale is None:
+                            rho = 10.0 # 50 percent of total reward magnitude
+                            r_ext_c = rewards[:,:-1].sum(dim=-1) - rewards[:,:-1].sum(dim=-1).mean()      # center to avoid sign bias
+                            r_div_c = rewards[:,-1] - rewards[:,-1].mean()
+                            beta = 0.1
+                            self.ema_ext_mag = (1.0 - beta) * self.ema_ext_mag + beta * r_ext_c.abs().mean()
+                            self.ema_div_mag = (1.0 - beta) * self.ema_div_mag + beta * r_div_c.abs().mean()
+                            diayn_scale = rho * (self.ema_ext_mag / (torch.clip(self.ema_div_mag,min=1e-8)))
+                        rewards[:,-1] = rewards[:,-1] * diayn_scale
                     prev_rewards = rewards
                     rewards = rewards.sum(dim=1, keepdim=True)  # sum rewards across components
                     obs = self.obs_normalizer(obs)
@@ -266,12 +285,24 @@ class OnPolicyRunner:
 
         for it in range(start_iter, tot_iter):
             start = time.time()
+            diayn_scale = None
             # Rollout
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
                     #constraints_nonzero = constraints[torch.nonzero(constraints,as_tuple=True)]
                     actions = self.alg.act(obs, critic_obs)
                     obs, rewards, dones, infos = self.env.step(actions)
+                    if self.num_skills is not None:
+                        if diayn_scale is None:
+                            rho = 1.0 # 25 percent of total reward magnitude
+                            r_ext_c = rewards[:,:-1].sum(dim=-1) - rewards[:,:-1].sum(dim=-1).mean()      # center to avoid sign bias
+                            r_div_c = rewards[:,-1] - rewards[:,-1].mean()
+                            beta = 0.025
+                            self.ema_ext_mag = (1.0 - beta) * self.ema_ext_mag + beta * r_ext_c.abs().mean()
+                            self.ema_div_mag = (1.0 - beta) * self.ema_div_mag + beta * r_div_c.abs().mean()
+                            diayn_scale = rho * (self.ema_ext_mag / (torch.clip(self.ema_div_mag,min=1e-8)))
+                        rewards[:,-1] = rewards[:,-1] * diayn_scale
+
                     obs = self.obs_normalizer(obs)
                     if "critic" in infos["observations"]:
                         critic_obs = self.critic_obs_normalizer(infos["observations"]["critic"])

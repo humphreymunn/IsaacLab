@@ -17,6 +17,7 @@ from isaaclab.envs import DirectRLEnv
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, saturate
+import torch.nn.functional as F
 
 if TYPE_CHECKING:
     from isaaclab_tasks.direct.allegro_hand.allegro_hand_env_cfg import AllegroHandEnvCfg
@@ -80,6 +81,14 @@ class InHandManipulationEnv(DirectRLEnv):
         self.y_unit_tensor = torch.tensor([0, 1, 0], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
         self.z_unit_tensor = torch.tensor([0, 0, 1], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
 
+        if self.cfg.diayn: # latent variable
+            self.z_div = torch.zeros((self.num_envs,1),device=self.device, dtype=torch.float32)
+            self.descrim_func = None
+            self.num_skills = None
+            self.reward_component_names += ["diayn_rew"]
+            self.reward_components += 1
+            self.reward_component_task_rew += ["diayn_rew"]
+
     def _setup_scene(self):
         # add hand, in-hand object, and goal object
         self.hand = Articulation(self.cfg.robot_cfg)
@@ -135,7 +144,7 @@ class InHandManipulationEnv(DirectRLEnv):
 
         if self.cfg.asymmetric_obs:
             states = self.compute_full_state()
-
+        obs = torch.cat( (obs, self.z_div), dim=-1 ) if self.cfg.diayn else obs
         observations = {"policy": obs}
         if self.cfg.asymmetric_obs:
             observations = {"policy": obs, "critic": states}
@@ -172,6 +181,22 @@ class InHandManipulationEnv(DirectRLEnv):
         if "log" not in self.extras:
             self.extras["log"] = dict()
         self.extras["log"]["consecutive_successes"] = self.consecutive_successes.mean()
+
+        comp_list = [total_reward]
+
+        if self.cfg.diayn:
+            # discriminator reward
+            if hasattr(self, 'obs_buf') and self.discrim_func is not None:
+                discrim_batch = self.discrim_func(self.obs_buf["policy"][:,:-1])
+                true_skills = self.z_div
+                discrim_loss = F.cross_entropy(discrim_batch, true_skills.long().squeeze(), reduction='none')
+            else:
+                discrim_loss = torch.ones((self.num_envs), device=self.device)*torch.log(torch.tensor(self.num_skills, device=self.device))
+            reward_term = torch.clamp((torch.log(torch.tensor(self.num_skills, device=self.device)) - discrim_loss)/self.max_episode_length, min=0.0, max=1.0) * 5e3
+            comp_list.append(reward_term.unsqueeze(-1))
+            self.extras["log"]["diayn_rew"] = reward_term.mean().item()
+
+        total_reward = torch.cat(comp_list, dim=-1)
 
         # reset goals if the goal has been reached
         goal_env_ids = self.reset_goal_buf.nonzero(as_tuple=False).squeeze(-1)
@@ -248,6 +273,9 @@ class InHandManipulationEnv(DirectRLEnv):
 
         self.successes[env_ids] = 0
         self._compute_intermediate_values()
+
+        if self.cfg.diayn and self.num_skills is not None: # latent variable
+            self.z_div[env_ids] = torch.randint(0,self.num_skills, (len(env_ids),1),device=self.device, dtype=torch.float32)
 
     def _reset_target_pose(self, env_ids):
         # reset goal rotation

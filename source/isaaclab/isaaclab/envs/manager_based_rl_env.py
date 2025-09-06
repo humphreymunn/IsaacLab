@@ -21,6 +21,7 @@ from isaaclab.ui.widgets import ManagerLiveVisualizer
 from .common import VecEnvStepReturn
 from .manager_based_env import ManagerBasedEnv
 from .manager_based_rl_env_cfg import ManagerBasedRLEnvCfg
+import torch.nn.functional as F
 
 
 class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
@@ -89,6 +90,10 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
 
         print("[INFO]: Completed setting up the environment...")
 
+        self.z_div = torch.zeros((self.num_envs,1),device=self.device, dtype=torch.float32)
+        self.descrim_func = None
+        self.num_skills = None
+
     """
     Properties.
     """
@@ -146,6 +151,12 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
             "reward_manager": ManagerLiveVisualizer(manager=self.reward_manager),
             "curriculum_manager": ManagerLiveVisualizer(manager=self.curriculum_manager),
         }
+
+    def update_discrim(self, discrim_func):
+        self.discrim_func = discrim_func
+
+    def update_num_skills(self, num_skills):
+        self.num_skills = num_skills
 
     """
     Operations - MDP
@@ -206,11 +217,29 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
         self.reset_time_outs = self.termination_manager.time_outs
         # -- reward computation
         self.reward_buf = self.reward_manager.compute(dt=self.step_dt)
-
+        
         if len(self.recorder_manager.active_terms) > 0:
             # update observations for recording if needed
             self.obs_buf = self.observation_manager.compute()
             self.recorder_manager.record_post_step()
+            if self.discrim_func is not None and self.num_skills is not None:
+                self.obs_buf = torch.cat((self.obs_buf, self.z_div), dim=-1)
+
+        if self.discrim_func is not None and self.num_skills is not None:
+            discrim_batch = self.discrim_func(self.obs_buf["policy"][:,:-1])
+            true_skills = self.z_div
+            discrim_loss = F.cross_entropy(discrim_batch, true_skills.long().squeeze(), reduction='none')
+            reward_term = torch.clamp((torch.log(torch.tensor(self.num_skills, device=self.device)) - discrim_loss)/self.max_episode_length, min=0.0, max=1.0)
+            # rew_buf is 4096,16 so concat onto last dim
+            #rho = 0.25 # 25 percent of total reward magnitude
+            #r_ext_c = self.reward_buf.sum(dim=-1) - self.reward_buf.sum(dim=-1).mean()      # center to avoid sign bias
+            #r_div_c = reward_term - reward_term.mean()
+            #reward_scale = rho * (r_ext_c.abs().mean() / (r_div_c.abs().mean() + 1e-8))
+            #reward_term *= reward_scale
+            #reward_scale = self.reward_buf.sum(dim=-1).mean().abs().item()
+            self.reward_buf = torch.cat((self.reward_buf, reward_term.unsqueeze(-1)), dim=-1)
+            #self.extras["log"]["diayn_rew"] = reward_term.mean().item()
+            self.extras["log"]["discrim_acc"] = (discrim_batch.argmax(dim=1) == true_skills.squeeze()).float().mean().item()
 
         # -- reset envs that terminated/timed-out and log the episode information
         reset_env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
@@ -219,6 +248,9 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
             self.recorder_manager.record_pre_reset(reset_env_ids)
 
             self._reset_idx(reset_env_ids)
+            if self.discrim_func is not None and self.num_skills is not None:
+                self.z_div[reset_env_ids] = torch.randint(0,self.num_skills, (len(reset_env_ids),1),device=self.device, dtype=torch.float32)
+
             # update articulation kinematics
             self.scene.write_data_to_sim()
             self.sim.forward()
